@@ -162,7 +162,7 @@ class Predictor:
         remaining = timesteps - trained
 
         callback = OffsetCheckpointCallback(
-            save_freq=n_steps,  # matches rollout length
+            save_freq=2048,  # matches rollout length
             save_path="./checkpoints",
             name_prefix=name_prefix,
             offset=trained,
