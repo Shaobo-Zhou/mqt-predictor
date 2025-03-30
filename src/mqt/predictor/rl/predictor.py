@@ -114,21 +114,14 @@ class Predictor:
         test: bool = False,
         trained: int = 0,
     ) -> None:
-        """Train or resume model training with offset checkpointing.
-
-        Arguments:
-            timesteps: Total training timesteps desired.
-            model_name: Prefix for saved model and logs.
-            verbose: Verbosity level for PPO.
-            test: If True, uses tiny n_steps for quick test.
-            trained: Number of timesteps already trained (for resuming).
-        """
+        """Train or resume model training with offset checkpointing."""
         n_steps = 10 if test else 2048
         progress_bar = not test
 
-        log_dir = f"./{model_name}_{self.figure_of_merit}_{self.device_name}"
-        ckpt_path = f"./checkpoints/{model_name}_{self.figure_of_merit}_{trained}_steps.zip"
-
+        name_prefix = f"{model_name}_{self.figure_of_merit}_{self.device_name}"
+        log_dir = f"./{name_prefix}"
+        ckpt_path = f"./checkpoints/{name_prefix}_{trained}_steps.zip"
+        
         logger.debug(f"🔁 Checking for checkpoint: {ckpt_path}")
 
         if os.path.exists(ckpt_path):
@@ -138,10 +131,10 @@ class Predictor:
                 env=self.env,
                 tensorboard_log=log_dir,
                 verbose=verbose,
-                device="cuda",  # or "cpu" depending on your setup
+                device="cuda",  # or "cpu"
             )
         else:
-            logger.info(f"🆕 No checkpoint found, starting fresh training")
+            logger.info("🆕 No checkpoint found, starting fresh training")
             model = MaskablePPO(
                 MaskableMultiInputActorCriticPolicy,
                 self.env,
@@ -154,18 +147,17 @@ class Predictor:
         remaining = timesteps - trained
 
         callback = OffsetCheckpointCallback(
-            save_freq=2048,
+            save_freq=n_steps,  # matches rollout length
             save_path="./checkpoints",
-            name_prefix=model_name,
+            name_prefix=name_prefix,
             offset=trained,
             verbose=1,
         )
 
         tb_log_name = "ppo"
-        #new_logger = configure(folder=os.path.join(log_dir, tb_log_name), format_strings=["stdout", "tensorboard"])
         new_logger = OffsetLogger(trained, os.path.join(log_dir, tb_log_name), format_strings=["stdout", "tensorboard"])
-
         model.set_logger(new_logger)
+
         model.learn(
             total_timesteps=remaining,
             tb_log_name=tb_log_name,
@@ -174,6 +166,6 @@ class Predictor:
         )
 
         model.save(
-            rl.helper.get_path_trained_model() / (model_name + "_" + self.figure_of_merit + "_" + self.device_name)
+            rl.helper.get_path_trained_model() / f"{name_prefix}"
         )
         logger.info("✅ Final model saved.")
