@@ -14,6 +14,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback,
 from stable_baselines3.common.logger import configure, Logger, KVWriter, HumanOutputFormat, TensorBoardOutputFormat
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
+from mqt.predictor.rl.predictorenv import PredictorEnv
 from mqt.predictor import reward, rl
 
 if TYPE_CHECKING:
@@ -63,7 +64,7 @@ class OffsetLogger(Logger):
 
 def make_env(reward_function: str, device_name: str, seed: int = 0, disable_bqskit: bool = False):
     def _init():
-        env = rl.PredictorEnv(reward_function=reward_function, device_name=device_name, disable_bqskit=disable_bqskit)
+        env = PredictorEnv(reward_function=reward_function, device_name=device_name, disable_bqskit=disable_bqskit)
         env.reset(seed=seed)
         return env
     return _init
@@ -85,7 +86,7 @@ class Predictor:
             self.env = SubprocVecEnv([make_env(figure_of_merit, device_name, seed=i, disable_bqskit=True) for i in range(num_envs)])
         else:
             # Single environment wrapped in DummyVecEnv to be compatible with SB3
-            self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name, disable_bqskit=False)
+            self.env = PredictorEnv(reward_function=figure_of_merit, device_name=device_name, disable_bqskit=False)
 
     def compile_as_predicted(
         self,
@@ -132,7 +133,7 @@ class Predictor:
         n_steps = 10 if test else 2048
         progress_bar = not test
 
-        name_prefix = f"{model_name}_{self.figure_of_merit}_{self.device_name}"
+        name_prefix = f"{model_name}_{self.figure_of_merit}_{self.device_name}_parallel"
         log_dir = f"./{name_prefix}"
         ckpt_path = f"./checkpoints/{name_prefix}_{trained}_steps.zip"
         
@@ -177,6 +178,7 @@ class Predictor:
             tb_log_name=tb_log_name,
             callback=callback,
             progress_bar=progress_bar,
+            log_interval=10
         )
 
         model.save(
