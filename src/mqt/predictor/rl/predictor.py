@@ -12,7 +12,7 @@ from sb3_contrib.common.maskable.policies import MaskableMultiInputActorCriticPo
 from sb3_contrib.common.maskable.utils import get_action_masks
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
 from stable_baselines3.common.logger import configure, Logger, KVWriter, HumanOutputFormat, TensorBoardOutputFormat
-
+from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from mqt.predictor import reward, rl
 
@@ -60,18 +60,32 @@ class OffsetLogger(Logger):
         if key == "time/total_timesteps":
             value += self.trained_offset
         super().record(key, value, exclude, include)
+
+def make_env(reward_function: str, device_name: str, seed: int = 0):
+    def _init():
+        env = rl.PredictorEnv(reward_function=reward_function, device_name=device_name)
+        env.reset(seed=seed)
+        return env
+    return _init
 class Predictor:
     """The Predictor class is used to train a reinforcement learning model for a given figure of merit and device such that it acts as a compiler."""
 
     def __init__(
-        self, figure_of_merit: reward.figure_of_merit, device_name: str, logger_level: int = logging.INFO
+        self, figure_of_merit: reward.figure_of_merit, device_name: str, logger_level: int = logging.INFO, num_envs: int = 1,
     ) -> None:
         """Initializes the Predictor object."""
         logger.setLevel(logger_level)
 
-        self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name)
+        #self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name)
         self.device_name = device_name
         self.figure_of_merit = figure_of_merit
+
+        if num_envs > 1:
+            # Parallel environment using subprocesses
+            self.env = SubprocVecEnv([make_env(figure_of_merit, device_name, seed=i) for i in range(num_envs)])
+        else:
+            # Single environment wrapped in DummyVecEnv to be compatible with SB3
+            self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name)
 
     def compile_as_predicted(
         self,

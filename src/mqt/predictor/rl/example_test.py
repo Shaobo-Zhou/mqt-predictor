@@ -7,6 +7,7 @@ if __name__ == "__main__":
     parser.add_argument("trained", type=int, help="Number of previously trained timesteps")
     parser.add_argument("--timesteps", type=int, default=100000, help="Total timesteps to train")
     parser.add_argument("--device_name", type=str, default="ibm_washington", help="Target quantum device")
+    parser.add_argument("--num_envs", type=int, default=1, help="Number of parallel environments")
     parser.add_argument("--model_name", type=str, default="rl", help="Name prefix for the model")
     parser.add_argument("--verbose", type=int, default=2, help="Verbosity level")
     parser.add_argument("--test", action="store_true", help="Run in test mode")
@@ -16,6 +17,7 @@ if __name__ == "__main__":
     rl_pred = Predictor(
         figure_of_merit=args.figure_of_merit,
         device_name=args.device_name
+        num_envs=args.num_envs
     )
 
     rl_pred.train_model(
