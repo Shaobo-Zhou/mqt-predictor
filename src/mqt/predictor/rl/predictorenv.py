@@ -30,7 +30,8 @@ from qiskit.transpiler.passes.layout.vf2_layout import VF2LayoutStopReason
 
 from mqt.bench.devices import get_device_by_name
 from mqt.predictor import reward, rl
-from mqt.predictor.hellinger import get_hellinger_model_path
+from mqt.predictor.hellinger.utils import get_hellinger_model_path 
+
 
 logger = logging.getLogger("mqt-predictor")
 
