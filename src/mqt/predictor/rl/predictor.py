@@ -170,7 +170,8 @@ class Predictor:
         )
 
         tb_log_name = "ppo"
-        new_logger = OffsetLogger(trained, os.path.join(log_dir, tb_log_name), format_strings=["stdout", "tensorboard"])
+        log_path = os.path.join(log_dir, "ppo")  # or your custom folder
+        new_logger = configure(folder=log_path, format_strings=["stdout", "tensorboard"])
         model.set_logger(new_logger)
 
         model.learn(
@@ -178,7 +179,6 @@ class Predictor:
             tb_log_name=tb_log_name,
             callback=callback,
             progress_bar=progress_bar,
-            log_interval=10
         )
 
         model.save(
