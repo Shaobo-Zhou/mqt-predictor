@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import TYPE_CHECKING
 
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.policies import MaskableMultiInputActorCriticPolicy
 from sb3_contrib.common.maskable.utils import get_action_masks
-from stable_baselines3.common.logger import configure
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
+from stable_baselines3.common.logger import configure, Logger, KVWriter, HumanOutputFormat, TensorBoardOutputFormat
 
 
 from mqt.predictor import reward, rl
@@ -40,6 +41,25 @@ class OffsetCheckpointCallback(BaseCallback):
         return True
 
 
+class OffsetLogger(Logger):
+    def __init__(self, trained_offset, folder, format_strings):
+        os.makedirs(folder, exist_ok=True)
+        output_formats = []
+
+        for fmt in format_strings:
+            if fmt == "stdout":
+                output_formats.append(HumanOutputFormat(sys.stdout))
+            elif fmt == "tensorboard":
+                output_formats.append(TensorBoardOutputFormat(folder))
+
+        self.trained_offset = trained_offset
+        # Fixed: `folder` must be passed to Logger
+        super().__init__(folder=folder, output_formats=output_formats)
+
+    def record(self, key, value, exclude=(), include=None):
+        if key == "time/total_timesteps":
+            value += self.trained_offset
+        super().record(key, value, exclude, include)
 class Predictor:
     """The Predictor class is used to train a reinforcement learning model for a given figure of merit and device such that it acts as a compiler."""
 
@@ -107,7 +127,7 @@ class Predictor:
         progress_bar = not test
 
         log_dir = f"./{model_name}_{self.figure_of_merit}_{self.device_name}"
-        ckpt_path = f"./checkpoints/{model_name}_{trained}_steps.zip"
+        ckpt_path = f"./checkpoints/{model_name}_{self.figure_of_merit}_{trained}_steps.zip"
 
         logger.debug(f"🔁 Checking for checkpoint: {ckpt_path}")
 
@@ -134,7 +154,7 @@ class Predictor:
         remaining = timesteps - trained
 
         callback = OffsetCheckpointCallback(
-            save_freq=1000,
+            save_freq=2048,
             save_path="./checkpoints",
             name_prefix=model_name,
             offset=trained,
@@ -142,7 +162,9 @@ class Predictor:
         )
 
         tb_log_name = "ppo"
-        new_logger = configure(folder=os.path.join(log_dir, tb_log_name), format_strings=["stdout", "tensorboard"])
+        #new_logger = configure(folder=os.path.join(log_dir, tb_log_name), format_strings=["stdout", "tensorboard"])
+        new_logger = OffsetLogger(trained, os.path.join(log_dir, tb_log_name), format_strings=["stdout", "tensorboard"])
+
         model.set_logger(new_logger)
         model.learn(
             total_timesteps=remaining,
