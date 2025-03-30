@@ -1,33 +1,23 @@
 import matplotlib.pyplot as plt
-import numpy as np
+import seaborn as sns
+import pandas as pd
 from qiskit import QuantumCircuit
 from pathlib import Path
-import zipfile
-import os
 from mqt.bench.utils import calc_supermarq_features
-from mqt.predictor import rl
-
 
 def get_path_training_circuits() -> Path:
     return Path(__file__).resolve().parent / "training_data" / "training_circuits"
 
 def load_all_features(max_qubits: int = None):
-    path = get_path_training_circuits()
-    file_list = list(path.glob("*.qasm"))
-
-    zip_path = path / "MQTBench.zip"
-    if zip_path.exists():
-        with zipfile.ZipFile(str(zip_path), "r") as zip_ref:
-            zip_ref.extractall(path)
-        file_list = list(path.glob("*.qasm"))
+    base_path = get_path_training_circuits() / "mqt_bench_training"
+    file_list = list(base_path.rglob("*.qasm"))  # recursively find all .qasm files
 
     features = []
     for file in file_list:
         try:
-            num_qubits = int(file.stem.split("_")[-1])
-            if max_qubits and num_qubits > max_qubits:
-                continue
             qc = QuantumCircuit.from_qasm_file(str(file))
+            if max_qubits and qc.num_qubits > max_qubits:
+                continue
             f = calc_supermarq_features(qc)
             features.append({
                 "num_qubits": qc.num_qubits,
@@ -40,18 +30,19 @@ def load_all_features(max_qubits: int = None):
             continue
     return features
 
+# Load and prepare data
 features = load_all_features()
+df = pd.DataFrame(features)
 
-# Plot histograms
-fig, axs = plt.subplots(1, 5, figsize=(25, 5))
-metrics = ["num_qubits", "depth", "critical_depth", "parallelism", "entanglement_ratio"]
+# Melt the DataFrame to long-form for seaborn
+df_melted = df.melt(var_name="Metric", value_name="Value")
 
-for ax, metric in zip(axs, metrics):
-    values = [f[metric] for f in features]
-    ax.hist(values, bins=20, edgecolor='black')
-    ax.set_title(f"Distribution of {metric}")
-    ax.set_xlabel(metric)
-    ax.set_ylabel("Count")
-
+# Plot violin plots
+plt.figure(figsize=(16, 6))
+sns.violinplot(x="Metric", y="Value", data=df_melted, inner="box", palette="muted")
+plt.title("Distribution of Circuit Features (MQT Bench)")
+plt.ylabel("Value")
+plt.xlabel("Feature")
+plt.grid(True)
 plt.tight_layout()
 plt.show()
