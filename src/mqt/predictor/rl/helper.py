@@ -351,32 +351,29 @@ def get_state_sample(max_qubits: int | None = None) -> tuple[QuantumCircuit, str
     Returns:
         A tuple containing the random quantum circuit and the path to the file from which it was read.
     """
-    file_list = list(get_path_training_circuits().glob("*.qasm"))
+    circuit_dir = get_path_training_circuits()
+    file_list = list(circuit_dir.glob("*.qasm"))
 
-    path_zip = get_path_training_circuits() / "training_data_compilation.zip"
-    if len(file_list) == 0 and path_zip.exists():
-        with zipfile.ZipFile(str(path_zip), "r") as zip_ref:
-            zip_ref.extractall(get_path_training_circuits())
-
-        file_list = list(get_path_training_circuits().glob("*.qasm"))
-        assert len(file_list) > 0
+    if len(file_list) == 0:
+        raise FileNotFoundError(f"No .qasm files found in: {circuit_dir}. Please extract the ZIP file manually.")
 
     found_suitable_qc = False
+    rng = np.random.default_rng(10)
+
     while not found_suitable_qc:
-        rng = np.random.default_rng(10)
         random_index = rng.integers(len(file_list))
-        num_qubits = int(str(file_list[random_index]).split("_")[-1].split(".")[0])
+        file_path = file_list[random_index]
+        num_qubits = int(str(file_path).split("_")[-1].split(".")[0])
         if max_qubits and num_qubits > max_qubits:
             continue
         found_suitable_qc = True
 
     try:
-        qc = QuantumCircuit.from_qasm_file(str(file_list[random_index]))
+        qc = QuantumCircuit.from_qasm_file(str(file_path))
     except Exception:
-        raise RuntimeError("Could not read QuantumCircuit from: " + str(file_list[random_index])) from None
+        raise RuntimeError(f"Could not read QuantumCircuit from: {file_path}") from None
 
-    return qc, str(file_list[random_index])
-
+    return qc, str(file_path)
 
 def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float64]]:
     """Creates a feature dictionary for a given quantum circuit.
