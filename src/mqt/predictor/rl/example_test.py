@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     rl_pred = Predictor(
         figure_of_merit=args.figure_of_merit,
-        device_name=args.device_name
+        device_name=args.device_name,
         num_envs=args.num_envs
     )
 
