@@ -39,7 +39,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
     """Predictor environment for reinforcement learning."""
 
     def __init__(
-        self, reward_function: reward.figure_of_merit = "expected_fidelity", device_name: str = "ibm_washington"
+        self, reward_function: reward.figure_of_merit = "expected_fidelity", device_name: str = "ibm_washington", disable_bqskit: bool = False, 
     ) -> None:
         """Initializes the PredictorEnv object."""
         logger.info("Init env: " + reward_function)
@@ -53,6 +53,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
         self.actions_final_optimization_indices = []
         self.used_actions: list[str] = []
         self.device = get_device_by_name(device_name)
+        self.disable_bqskit = disable_bqskit
         # check for uni-directional coupling map
         for a, b in self.device.coupling_map:
             if [b, a] not in self.device.coupling_map:
@@ -61,7 +62,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         index = 0
 
-        for elem in rl.helper.get_actions_synthesis():
+        """ for elem in rl.helper.get_actions_synthesis():
             self.action_set[index] = elem
             self.actions_synthesis_indices.append(index)
             index += 1
@@ -84,7 +85,23 @@ class PredictorEnv(Env):  # type: ignore[misc]
         for elem in rl.helper.get_actions_final_optimization():
             self.action_set[index] = elem
             self.actions_final_optimization_indices.append(index)
-            index += 1
+            index += 1 """
+
+        def add_actions(getter_fn, target_list):
+            nonlocal index
+            for elem in getter_fn():
+                if self.disable_bqskit and elem["origin"] == "bqskit":
+                    continue  # ← SKIP bqskit if requested
+                self.action_set[index] = elem
+                target_list.append(index)
+                index += 1
+
+        add_actions(rl.helper.get_actions_synthesis, self.actions_synthesis_indices)
+        add_actions(rl.helper.get_actions_layout, self.actions_layout_indices)
+        add_actions(rl.helper.get_actions_routing, self.actions_routing_indices)
+        add_actions(rl.helper.get_actions_opt, self.actions_opt_indices)
+        add_actions(rl.helper.get_actions_mapping, self.actions_mapping_indices)
+        add_actions(rl.helper.get_actions_final_optimization, self.actions_final_optimization_indices)
 
         self.action_set[index] = rl.helper.get_action_terminate()
         self.action_terminate_index = index

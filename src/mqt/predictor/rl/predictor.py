@@ -61,9 +61,9 @@ class OffsetLogger(Logger):
             value += self.trained_offset
         super().record(key, value, exclude, include)
 
-def make_env(reward_function: str, device_name: str, seed: int = 0):
+def make_env(reward_function: str, device_name: str, seed: int = 0, disable_bqskit: bool = False):
     def _init():
-        env = rl.PredictorEnv(reward_function=reward_function, device_name=device_name)
+        env = rl.PredictorEnv(reward_function=reward_function, device_name=device_name, disable_bqskit=disable_bqskit)
         env.reset(seed=seed)
         return env
     return _init
@@ -82,10 +82,10 @@ class Predictor:
 
         if num_envs > 1:
             # Parallel environment using subprocesses
-            self.env = SubprocVecEnv([make_env(figure_of_merit, device_name, seed=i) for i in range(num_envs)])
+            self.env = SubprocVecEnv([make_env(figure_of_merit, device_name, seed=i, disable_bqskit=True) for i in range(num_envs)])
         else:
             # Single environment wrapped in DummyVecEnv to be compatible with SB3
-            self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name)
+            self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name, disable_bqskit=False)
 
     def compile_as_predicted(
         self,
