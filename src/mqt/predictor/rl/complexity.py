@@ -23,6 +23,8 @@ def load_all_features(max_qubits: int = None):
             features.append({
                 "file": str(file),
                 "num_qubits": qc.num_qubits,
+                "depth": qc.depth,
+                "gate_count": len(qc.data),
                 "program_communication": f.program_communication,
                 "parallelism": f.parallelism,
                 "entanglement_ratio": f.entanglement_ratio,
@@ -35,36 +37,57 @@ def load_all_features(max_qubits: int = None):
 # Load features
 df = load_all_features()
 
-# Normalize only num_qubits
+# Normalize selected features
 scaler = MinMaxScaler()
 df["num_qubits_norm"] = scaler.fit_transform(df[["num_qubits"]])
+df["gate_count_norm"] = scaler.fit_transform(df[["gate_count"]])
 
-# Use normalized num_qubits and raw normalized-range features for complexity
-features_for_complexity = ["num_qubits_norm", "program_communication", "parallelism", "entanglement_ratio", "liveness"]
-df["complexity"] = df[features_for_complexity].mean(axis=1)
+# Complexity Metric 1: Full average
+features_full = ["num_qubits_norm", "gate_count_norm", "program_communication", "parallelism", "entanglement_ratio", "liveness"]
+df["complexity"] = df[features_full].mean(axis=1)
 
-# Bin into curriculum buckets
-df["complexity_bin"] = pd.qcut(df["complexity"], q=5, labels=["very_easy", "easy", "medium", "hard", "very_hard"])
+# Complexity Metric 2: Only normalized qubit count
+df["complexity_qubits_only"] = df["num_qubits_norm"]
 
-# Save to CSV
+# Complexity Metric 3: Weighted average of normalized qubits and gate count
+df["complexity_qubits_gates"] = (df["num_qubits_norm"] + df["gate_count_norm"]) / 2
+
+# Bin each complexity for curriculum stages
+df["bin_full"] = pd.qcut(df["complexity"], q=5, labels=["very_easy", "easy", "medium", "hard", "very_hard"])
+df["bin_qubits_only"] = pd.qcut(df["complexity_qubits_only"], q=5, labels=["very_easy", "easy", "medium", "hard", "very_hard"])
+df["bin_qubits_gates"] = pd.qcut(df["complexity_qubits_gates"], q=5, labels=["very_easy", "easy", "medium", "hard", "very_hard"])
+
+# Save results
 output_path = Path(__file__).resolve().parent / "circuit_complexity_metrics.csv"
 df.to_csv(output_path, index=False)
 
-# ---- Plotting ----
+# --- Plot each complexity metric ---
+def plot_complexity_distribution(col, title):
+    plt.figure(figsize=(8, 5))
+    sns.histplot(df[col], bins=20, kde=True, color="skyblue", edgecolor="black")
 
-# Plot histogram of complexity
-plt.figure(figsize=(8, 5))
-sns.histplot(df["complexity"], bins=20, kde=True, color="skyblue", edgecolor="black")
-plt.title("Distribution of Circuit Complexity (Equal Weights)")
-plt.xlabel("Complexity Score")
-plt.ylabel("Count")
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+    # Mark bin edges
+    cuts = pd.qcut(df[col], q=5, retbins=True)[1]
+    for cut in cuts[1:-1]:  # skip 0 and 1
+        plt.axvline(cut, color="red", linestyle="--", linewidth=1)
+
+    plt.title(title)
+    plt.xlabel("Complexity Score")
+    plt.ylabel("Count")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+plot_complexity_distribution("complexity", "Distribution: Full Feature Complexity")
+#plot_complexity_distribution("complexity_qubits_only", "Distribution: Qubit-Only Complexity")
+#plot_complexity_distribution("complexity_qubits_gates", "Distribution: Qubit + Gate Complexity")
+
 
 # Plot violin plots
-metrics = ["num_qubits", "program_communication", "parallelism", "entanglement_ratio", "liveness"]
-fig, axes = plt.subplots(1, len(metrics), figsize=(4 * len(metrics), 6))
+output_path = Path(__file__).resolve().parent / "circuit_complexity_metrics.csv"
+df = pd.read_csv(output_path)
+metrics = ["num_qubits", "depth", "gate_count", "program_communication", "parallelism", "entanglement_ratio", "liveness"]
+fig, axes = plt.subplots(1, len(metrics), figsize=(6 * len(metrics), 6))
 
 for i, metric in enumerate(metrics):
     ax = axes[i]
@@ -74,7 +97,7 @@ for i, metric in enumerate(metrics):
     ax.set_xticks([])
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
 
-    if metric != "num_qubits":
+    if (metric != "num_qubits") and (metric != "gate_count") and (metric != "depth"):
         ax.axhline(0, color="gray", linestyle="--", linewidth=1)
         ax.axhline(1, color="gray", linestyle="--", linewidth=1)
         ax.set_ylim(-0.2, 1.2)
