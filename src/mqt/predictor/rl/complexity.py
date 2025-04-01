@@ -6,10 +6,8 @@ from qiskit import QuantumCircuit
 from pathlib import Path
 from mqt.bench.utils import calc_supermarq_features
 
-
 def get_path_training_circuits() -> Path:
     return Path(__file__).resolve().parent / "training_data" / "training_circuits"
-
 
 def load_all_features(max_qubits: int = None):
     base_path = get_path_training_circuits() / "mqt_bench_training"
@@ -25,43 +23,36 @@ def load_all_features(max_qubits: int = None):
             features.append({
                 "file": str(file),
                 "num_qubits": qc.num_qubits,
-                "critical_depth": f.critical_depth,
+                "program_communication": f.program_communication,
                 "parallelism": f.parallelism,
                 "entanglement_ratio": f.entanglement_ratio,
+                "liveness": f.liveness
             })
         except Exception:
             continue
     return pd.DataFrame(features)
 
-
-""" # Load feature data
+# Load features
 df = load_all_features()
 
-df_outliers = df[
-    (df["critical_depth"] > 1) | (df["critical_depth"] < 0) |
-    (df["entanglement_ratio"] > 1) | (df["entanglement_ratio"] < 0)
-]
-print("Outliers detected:", len(df_outliers))
-print(df_outliers)
-
-
-# Features to include in complexity
-feature_columns = ["num_qubits", "critical_depth", "parallelism", "entanglement_ratio"]
-
-# Normalize the features
+# Normalize only num_qubits
 scaler = MinMaxScaler()
-df_normalized = pd.DataFrame(scaler.fit_transform(df[feature_columns]), columns=feature_columns)
+df["num_qubits_norm"] = scaler.fit_transform(df[["num_qubits"]])
 
-# Compute complexity score as the mean of normalized features (equal weights)
-df["complexity"] = df_normalized.mean(axis=1)
+# Use normalized num_qubits and raw normalized-range features for complexity
+features_for_complexity = ["num_qubits_norm", "program_communication", "parallelism", "entanglement_ratio", "liveness"]
+df["complexity"] = df[features_for_complexity].mean(axis=1)
 
+# Bin into curriculum buckets
 df["complexity_bin"] = pd.qcut(df["complexity"], q=5, labels=["very_easy", "easy", "medium", "hard", "very_hard"])
 
-# Save to CSV for reuse
+# Save to CSV
 output_path = Path(__file__).resolve().parent / "circuit_complexity_metrics.csv"
 df.to_csv(output_path, index=False)
 
-# Plot the complexity distribution
+# ---- Plotting ----
+
+# Plot histogram of complexity
 plt.figure(figsize=(8, 5))
 sns.histplot(df["complexity"], bins=20, kde=True, color="skyblue", edgecolor="black")
 plt.title("Distribution of Circuit Complexity (Equal Weights)")
@@ -70,34 +61,24 @@ plt.ylabel("Count")
 plt.grid(True)
 plt.tight_layout()
 plt.show()
- """
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-csv_path = SCRIPT_DIR / "circuit_complexity_metrics.csv"
-df = pd.read_csv(csv_path)
+# Plot violin plots
+metrics = ["num_qubits", "program_communication", "parallelism", "entanglement_ratio", "liveness"]
+fig, axes = plt.subplots(1, len(metrics), figsize=(4 * len(metrics), 6))
 
-# Plot violin plots for the core features + complexity
-metrics = ["num_qubits", "critical_depth", "parallelism", "entanglement_ratio"]
-
-
-# Set up figure and axes
-fig, axes = plt.subplots(1, len(metrics), figsize=(4 * len(metrics), 6), sharex=False)
 for i, metric in enumerate(metrics):
     ax = axes[i]
     sns.violinplot(y=df[metric], ax=ax, inner="box", color="skyblue", cut=0, linewidth=1)
-    
     ax.set_title(metric.replace("_", " ").title())
-    ax.set_xlabel("")  # No x-label needed
-    ax.set_xticks([])  # Remove x-ticks for cleaner look
+    ax.set_xlabel("")
+    ax.set_xticks([])
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
-    
-    # Add reference lines for normalized metrics
+
     if metric != "num_qubits":
         ax.axhline(0, color="gray", linestyle="--", linewidth=1)
         ax.axhline(1, color="gray", linestyle="--", linewidth=1)
         ax.set_ylim(-0.2, 1.2)
 
-# Adjust layout
 plt.suptitle("Distribution of Circuit Features", fontsize=16)
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.show()
