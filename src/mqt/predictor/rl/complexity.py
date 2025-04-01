@@ -1,14 +1,17 @@
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
 from qiskit import QuantumCircuit
 from pathlib import Path
 from mqt.bench.utils import calc_supermarq_features
 
+
 def get_path_training_circuits() -> Path:
     return Path(__file__).resolve().parent / "training_data" / "training_circuits"
 
-def load_all_features(max_qubits: int = None, remove_depth_outliers: bool = True, outlier_quantile: float = 0.95):
+
+def load_all_features(max_qubits: int = None):
     base_path = get_path_training_circuits() / "mqt_bench_training"
     file_list = list(base_path.rglob("*.qasm"))
 
@@ -20,40 +23,81 @@ def load_all_features(max_qubits: int = None, remove_depth_outliers: bool = True
                 continue
             f = calc_supermarq_features(qc)
             features.append({
-                "filename": file.name,
+                "file": str(file),
                 "num_qubits": qc.num_qubits,
-                "depth": qc.depth(),
                 "critical_depth": f.critical_depth,
                 "parallelism": f.parallelism,
                 "entanglement_ratio": f.entanglement_ratio,
             })
         except Exception:
             continue
+    return pd.DataFrame(features)
 
-    df = pd.DataFrame(features)
 
-    if remove_depth_outliers:
-        threshold = df["depth"].quantile(outlier_quantile)
-        print(threshold)
-        df = df[df["depth"] <= threshold]
+""" # Load feature data
+df = load_all_features()
 
-    return df
+df_outliers = df[
+    (df["critical_depth"] > 1) | (df["critical_depth"] < 0) |
+    (df["entanglement_ratio"] > 1) | (df["entanglement_ratio"] < 0)
+]
+print("Outliers detected:", len(df_outliers))
+print(df_outliers)
 
-# Load filtered features
-df = load_all_features(remove_depth_outliers=True, outlier_quantile=0.99)
 
-# Plot violin plots
-metrics = ["num_qubits", "depth", "critical_depth", "parallelism", "entanglement_ratio"]
-n_metrics = len(metrics)
+# Features to include in complexity
+feature_columns = ["num_qubits", "critical_depth", "parallelism", "entanglement_ratio"]
 
-fig, axes = plt.subplots(1, n_metrics, figsize=(5 * n_metrics, 5))
-for ax, metric in zip(axes, metrics):
-    sns.violinplot(y=df[metric], ax=ax, inner="box", palette="muted")
-    ax.set_title(f"{metric}")
-    ax.set_xlabel("")
-    ax.set_ylabel("Value")
-    ax.grid(True)
+# Normalize the features
+scaler = MinMaxScaler()
+df_normalized = pd.DataFrame(scaler.fit_transform(df[feature_columns]), columns=feature_columns)
 
-plt.suptitle("Distribution of Circuit Features (MQT Bench, depth outliers removed)", fontsize=16)
+# Compute complexity score as the mean of normalized features (equal weights)
+df["complexity"] = df_normalized.mean(axis=1)
+
+df["complexity_bin"] = pd.qcut(df["complexity"], q=5, labels=["very_easy", "easy", "medium", "hard", "very_hard"])
+
+# Save to CSV for reuse
+output_path = Path(__file__).resolve().parent / "circuit_complexity_metrics.csv"
+df.to_csv(output_path, index=False)
+
+# Plot the complexity distribution
+plt.figure(figsize=(8, 5))
+sns.histplot(df["complexity"], bins=20, kde=True, color="skyblue", edgecolor="black")
+plt.title("Distribution of Circuit Complexity (Equal Weights)")
+plt.xlabel("Complexity Score")
+plt.ylabel("Count")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+ """
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+csv_path = SCRIPT_DIR / "circuit_complexity_metrics.csv"
+df = pd.read_csv(csv_path)
+
+# Plot violin plots for the core features + complexity
+metrics = ["num_qubits", "critical_depth", "parallelism", "entanglement_ratio"]
+
+
+# Set up figure and axes
+fig, axes = plt.subplots(1, len(metrics), figsize=(4 * len(metrics), 6), sharex=False)
+for i, metric in enumerate(metrics):
+    ax = axes[i]
+    sns.violinplot(y=df[metric], ax=ax, inner="box", color="skyblue", cut=0, linewidth=1)
+    
+    ax.set_title(metric.replace("_", " ").title())
+    ax.set_xlabel("")  # No x-label needed
+    ax.set_xticks([])  # Remove x-ticks for cleaner look
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+    
+    # Add reference lines for normalized metrics
+    if metric != "num_qubits":
+        ax.axhline(0, color="gray", linestyle="--", linewidth=1)
+        ax.axhline(1, color="gray", linestyle="--", linewidth=1)
+        ax.set_ylim(-0.2, 1.2)
+
+# Adjust layout
+plt.suptitle("Distribution of Circuit Features", fontsize=16)
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.show()
