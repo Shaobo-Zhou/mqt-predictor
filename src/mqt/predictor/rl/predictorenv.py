@@ -15,7 +15,9 @@ else:
 if TYPE_CHECKING:
     from pathlib import Path
 
+import random
 import numpy as np
+import pandas as pd
 from bqskit.ext import bqskit_to_qiskit, qiskit_to_bqskit
 from gymnasium import Env
 from gymnasium.spaces import Box, Dict, Discrete
@@ -53,6 +55,11 @@ class PredictorEnv(Env):  # type: ignore[misc]
         self.actions_final_optimization_indices = []
         self.used_actions: list[str] = []
         self.device = get_device_by_name(device_name)
+        self.curriculum_df = None
+        self.curriculum_bins = None
+        self.current_difficulty_level = 0
+        self.max_difficulty_level = 4  # 0 = very_easy, 4 = very_hard
+        self.curriculum_sampling_enabled = False
         # check for uni-directional coupling map
         for a, b in self.device.coupling_map:
             if [b, a] not in self.device.coupling_map:
@@ -170,6 +177,12 @@ class PredictorEnv(Env):  # type: ignore[misc]
         """Renders the current state."""
         print(self.state.draw())
 
+    def set_curriculum_data(self, df: pd.DataFrame, enable_sampling: bool = True):
+        """Load the curriculum dataframe and enable/disable sampling."""
+        self.curriculum_df = df
+        self.curriculum_bins = df["complexity_bin"].unique()
+        self.curriculum_sampling_enabled = enable_sampling
+        self.current_difficulty_level = 0
     def reset(
         self,
         qc: Path | str | QuantumCircuit | None = None,
@@ -187,7 +200,17 @@ class PredictorEnv(Env):  # type: ignore[misc]
             The initial state and additional information.
         """
         super().reset(seed=seed)
-        if isinstance(qc, QuantumCircuit):
+        if self.curriculum_sampling_enabled and self.curriculum_df is not None:
+            # Filter circuits by difficulty level
+            level_label = self.curriculum_bins[self.current_difficulty_level]
+            df_filtered = self.curriculum_df[self.curriculum_df["complexity_bin"] == level_label]
+            if df_filtered.empty:
+                raise ValueError(f"No circuits available for difficulty level '{level_label}'.")
+
+            sampled_file = random.choice(df_filtered["file"].tolist())
+            self.state = QuantumCircuit.from_qasm_file(sampled_file)
+            self.filename = sampled_file
+        elif isinstance(qc, QuantumCircuit):
             self.state = qc
         elif qc:
             self.state = QuantumCircuit.from_qasm_file(str(qc))

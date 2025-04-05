@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import pandas as pd
 from typing import TYPE_CHECKING
 
 from sb3_contrib import MaskablePPO
@@ -64,12 +65,16 @@ class Predictor:
     """The Predictor class is used to train a reinforcement learning model for a given figure of merit and device such that it acts as a compiler."""
 
     def __init__(
-        self, figure_of_merit: reward.figure_of_merit, device_name: str, logger_level: int = logging.INFO
+        self, figure_of_merit: reward.figure_of_merit, device_name: str, logger_level: int = logging.INFO, use_curriculum: bool = False,
+        curriculum_df_path: str = "curriculum_metrics_optuna.csv"
     ) -> None:
         """Initializes the Predictor object."""
         logger.setLevel(logger_level)
 
         self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name)
+        if use_curriculum:
+            df_curriculum = pd.read_csv(curriculum_df_path)
+            self.env.set_curriculum_data(df_curriculum, enable_sampling=True)
         self.device_name = device_name
         self.figure_of_merit = figure_of_merit
 
