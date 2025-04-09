@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
+import json
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -54,6 +56,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
         self.actions_opt_indices = []
         self.actions_final_optimization_indices = []
         self.used_actions: list[str] = []
+        self.action_timings = {}
         self.device = get_device_by_name(device_name)
         self.curriculum_df = None
         self.curriculum_bins = None
@@ -127,7 +130,19 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
     def step(self, action: int) -> tuple[dict[str, Any], float, bool, bool, dict[Any, Any]]:
         """Executes the given action and returns the new state, the reward, whether the episode is done, whether the episode is truncated and additional information."""
-        self.used_actions.append(str(self.action_set[action].get("name")))
+        action_name = self.action_set[action].get("name")
+        logger.info(f"🛠️  [Step {self.num_steps}] Applying action: {action_name}")
+        self.used_actions.append(str(action_name))
+
+        start_time = time.time()
+        altered_qc = self.apply_action(action)
+        elapsed = time.time() - start_time
+
+        logger.info(f"⏱️  [Step {self.num_steps}] Action '{action_name}' took {elapsed:.2f} seconds")
+        # Store the timing
+        if action_name not in self.action_timings:
+            self.action_timings[action_name] = []
+        self.action_timings[action_name].append(elapsed)
         altered_qc = self.apply_action(action)
         if not altered_qc:
             return (
@@ -161,6 +176,15 @@ class PredictorEnv(Env):  # type: ignore[misc]
         obs = rl.helper.create_feature_dict(self.state)
         return obs, reward_val, done, False, {}
 
+    def export_action_timings(self, filepath: str = "action_timings.json"):
+        """Export average action timings to a JSON file."""
+        avg_timings = {
+            action: sum(times) / len(times)
+            for action, times in self.action_timings.items()
+        }
+        with open(filepath, "w") as f:
+            json.dump(avg_timings, f, indent=4)
+        logger.info(f"📁 Saved average action timings to {filepath}")
     def calculate_reward(self) -> float:
         """Calculates and returns the reward for the current state."""
         if self.reward_function == "expected_fidelity":
@@ -201,15 +225,20 @@ class PredictorEnv(Env):  # type: ignore[misc]
         """
         super().reset(seed=seed)
         if self.curriculum_sampling_enabled and self.curriculum_df is not None:
-            # Filter circuits by difficulty level
             level_label = self.curriculum_bins[self.current_difficulty_level]
             df_filtered = self.curriculum_df[self.curriculum_df["complexity_bin"] == level_label]
+            
+            logger.info(f"📚 Curriculum sampling enabled. Current difficulty level: {self.current_difficulty_level} ({level_label})")
+            logger.info(f"🧪 Sampling from {len(df_filtered)} circuits at this level.")
+            
             if df_filtered.empty:
                 raise ValueError(f"No circuits available for difficulty level '{level_label}'.")
 
             sampled_file = random.choice(df_filtered["file"].tolist())
+            logger.info(f"🎯 Sampled circuit: {sampled_file}")
             self.state = QuantumCircuit.from_qasm_file(sampled_file)
             self.filename = sampled_file
+
         elif isinstance(qc, QuantumCircuit):
             self.state = qc
         elif qc:

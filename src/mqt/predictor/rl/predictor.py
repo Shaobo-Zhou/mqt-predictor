@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.policies import MaskableMultiInputActorCriticPolicy
 from sb3_contrib.common.maskable.utils import get_action_masks
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.logger import configure, Logger, KVWriter, HumanOutputFormat, TensorBoardOutputFormat
 
 
@@ -36,7 +36,7 @@ class OffsetCheckpointCallback(BaseCallback):
         total_steps = self.num_timesteps + self.offset
         if total_steps % self.save_freq == 0:
             path = f"{self.save_path}/{self.name_prefix}_{total_steps}_steps.zip"
-            self.model.save(path)
+            #self.model.save(path)
             if self.verbose > 0:
                 print(f"✅ Saved checkpoint: {path}")
         return True
@@ -118,6 +118,7 @@ class Predictor:
         verbose: int = 2,
         test: bool = False,
         trained: int = 0,
+        custom_callbacks: list[BaseCallback] = None,
     ) -> None:
         """Train or resume model training with offset checkpointing."""
         n_steps = 10 if test else 2048
@@ -151,13 +152,19 @@ class Predictor:
 
         remaining = timesteps - trained
 
-        callback = OffsetCheckpointCallback(
-            save_freq=n_steps,  # matches rollout length
+        default_callback = OffsetCheckpointCallback(
+            save_freq=n_steps,
             save_path="./checkpoints",
             name_prefix=name_prefix,
             offset=trained,
             verbose=1,
         )
+
+        if custom_callbacks:
+            callback = CallbackList([default_callback] + custom_callbacks)
+        else:
+            callback = default_callback
+        #callback = CallbackList(custom_callbacks) if custom_callbacks else None
 
         tb_log_name = "ppo"
         log_path = os.path.join(log_dir, "ppo")  # or your custom folder

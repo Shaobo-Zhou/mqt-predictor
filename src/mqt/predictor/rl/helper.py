@@ -195,12 +195,16 @@ def get_actions_opt() -> list[dict[str, Any]]:
             "name": "BQSKitO2",
             "transpile_pass": lambda circuit: bqskit_compile(
                 circuit,
-                optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
+                optimization_level=1,
+                synthesis_epsilon=1e-2,
+                max_synthesis_size=2,
+                #optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+                #max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
                 seed=10,
-            ),
-            "origin": "bqskit",
+            ), 
+            "origin": "bqskit", 
+            
         },
     ]
 
@@ -292,23 +296,23 @@ def get_actions_mapping() -> list[dict[str, Any]]:
             ],
             "origin": "qiskit",
         },
-        {
-            "name": "BQSKitMapping",
-            "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
-                bqskit_circuit,
-                model=MachineModel(
-                    num_qudits=device.num_qubits,
-                    gate_set=get_bqskit_native_gates(device),
-                    coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
-                ),
-                with_mapping=True,
-                optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-                seed=10,
-            ),
-            "origin": "bqskit",
-        },
+        #{
+            #"name": "BQSKitMapping",
+            #"transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
+                #bqskit_circuit,
+                #model=MachineModel(
+                    #num_qudits=device.num_qubits,
+                    #gate_set=get_bqskit_native_gates(device),
+                    #coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
+                #),
+                #with_mapping=True,
+                #optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8
+                #max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
+                #seed=10,
+            #),
+            #"origin": "bqskit",
+        #},
     ]
 
 
@@ -322,18 +326,18 @@ def get_actions_synthesis() -> list[dict[str, Any]]:
             ],
             "origin": "qiskit",
         },
-        {
-            "name": "BQSKitSynthesis",
-            "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
-                bqskit_circuit,
-                model=MachineModel(bqskit_circuit.num_qudits, gate_set=get_bqskit_native_gates(device)),
-                optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-                seed=10,
-            ),
-            "origin": "bqskit",
-        },
+        #{
+            #"name": "BQSKitSynthesis",
+            #"transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
+                #bqskit_circuit,
+                #model=MachineModel(bqskit_circuit.num_qudits, gate_set=get_bqskit_native_gates(device)),
+                #optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+                #max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
+                #seed=10,
+            #),
+            #"origin": "bqskit",
+        #},
     ]
 
 

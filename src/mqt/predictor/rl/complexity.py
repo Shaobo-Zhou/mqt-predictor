@@ -13,6 +13,46 @@ from mqt.bench.utils import calc_supermarq_features
 def get_path_training_circuits() -> Path:
     return Path(__file__).resolve().parent / "training_data" / "training_circuits"
 
+
+def check_is_connected():
+    base_path = get_path_training_circuits() / "mqt_bench_training"
+    file_list = list(base_path.rglob("*.qasm"))
+    
+    disconnected_circuits = []
+
+    for count, file in enumerate(file_list):
+        print(f"🔍 Processing circuit {count}: {file.name}")
+        try:
+            qc = QuantumCircuit.from_qasm_file(str(file))
+        except Exception as e:
+            print(f"⚠️ Could not load {file.name}: {e}")
+            continue
+
+        G = nx.Graph()
+        for gate in qc.data:
+            if len(gate.qubits) == 2:
+                q0 = qc.qubits.index(gate.qubits[0])
+                q1 = qc.qubits.index(gate.qubits[1])
+                if G.has_edge(q0, q1):
+                    G[q0][q1]["weight"] += 1
+                else:
+                    G.add_edge(q0, q1, weight=1)
+
+        if len(G.nodes) > 1 and not nx.is_connected(G):
+            print(f"❌ Disconnected: Circuit {count} - {file.name}")
+            disconnected_circuits.append((count, file.name, G))
+
+    # Plot all disconnected graphs
+    for idx, (count, name, G) in enumerate(disconnected_circuits):
+        plt.figure(figsize=(6, 4))
+        pos = nx.spring_layout(G, seed=42)
+        nx.draw(G, pos, with_labels=True, node_color='lightcoral', edge_color='gray', node_size=500)
+        plt.title(f"Disconnected Interaction Graph: {name}")
+        plt.tight_layout()
+        plt.show()
+
+    print(f"\n✅ Done. Found {len(disconnected_circuits)} disconnected graphs.")
+
 def load_all_features_to_csv(max_qubits: int = None):
     base_path = get_path_training_circuits() / "mqt_bench_training"
     file_list = list(base_path.rglob("*.qasm"))
@@ -64,7 +104,7 @@ def load_all_features_to_csv(max_qubits: int = None):
             row = {
                 "file": str(file),
                 "num_qubits": qc.num_qubits,
-                "depth": qc.depth,
+                "depth": qc.depth(),
                 "gate_count": len(qc.data),
                 "program_communication": f.program_communication,
                 "parallelism": f.parallelism,
@@ -139,20 +179,24 @@ def plot_complexity_distribution(col, title):
 #plot_complexity_distribution("complexity_qubits_only", "Distribution: Qubit-Only Complexity")
 #plot_complexity_distribution("complexity_qubits_gates", "Distribution: Qubit + Gate Complexity")
 
-
+#check_is_connected()
 # --- Load data ---
 output_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics.csv"
+#load_all_features_to_csv()
+final_path = Path(__file__).resolve().parent /"ig_circuit_complexity_metrics_final.csv"
 df = pd.read_csv(output_path)
 
 # --- Log-transform metrics that are skewed ---
 df["log_gate_count"] = np.log1p(df["gate_count"])
 df["log_avg_hopcount"] = np.log1p(df["avg_hopcount"])
 df["log_adj_std"] = np.log1p(df["adj_std"])
+df["log_depth"] = np.log1p(df["depth"])
 
 # --- List of metrics to normalize ---
 raw_features = [
     "num_qubits",
     "log_gate_count",
+    "log_depth",
     "log_avg_hopcount",  # will invert after normalization
     "max_degree",
     "min_degree",
@@ -176,6 +220,7 @@ df["log_avg_hopcount_norm_inv"] = 1 - df["log_avg_hopcount_norm"]
 # Otherwise, use as-is
 df["log_adj_std_norm_final"] = df["log_adj_std_norm"]
 
+df.to_csv(final_path)
 # --- Final feature list for complexity ---
 final_features = [
     "num_qubits_norm",
@@ -196,10 +241,10 @@ df["complexity_bin"] = pd.qcut(
 )
 
 # --- Plot the result ---
-plot_complexity_distribution("complexity_score", "Distribution of Complexity Score (Inverted Metrics Included)")
+#plot_complexity_distribution("complexity_score", "Distribution of Complexity Score (Inverted Metrics Included)")
 
-""" # Define metrics for each row
-metrics_row1 = ["num_qubits", "log_gate_count", "program_communication", "parallelism", "entanglement_ratio", "liveness"]
+# Define metrics for each row
+metrics_row1 = ["num_qubits", "log_gate_count", "log_depth"]
 metrics_row2 = ["log_avg_hopcount", "max_degree", "min_degree", "log_adj_std"]
 
 # Total number of subplots in each row
@@ -221,7 +266,7 @@ for i, metric in enumerate(metrics_row1):
     ax.set_ylabel("")
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
 
-    if metric not in {"num_qubits", "log_gate_count", "depth"}:
+    if metric not in {"num_qubits", "log_gate_count", "log_depth"}:
         ax.axhline(0, color="gray", linestyle="--", linewidth=1)
         ax.axhline(1, color="gray", linestyle="--", linewidth=1)
         ax.set_ylim(-0.2, 1.2)
@@ -243,4 +288,4 @@ for j in range(len(metrics_row2), ncols):
 plt.suptitle("Distribution of Circuit Features", fontsize=18)
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.subplots_adjust(hspace=0.5, wspace=0.4)
-plt.show() """
+plt.show()
