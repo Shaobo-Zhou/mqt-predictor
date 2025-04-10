@@ -160,11 +160,11 @@ class Predictor:
             verbose=1,
         )
 
-        if custom_callbacks:
+        """ if custom_callbacks:
             callback = CallbackList([default_callback] + custom_callbacks)
         else:
-            callback = default_callback
-        #callback = CallbackList(custom_callbacks) if custom_callbacks else None
+            callback = default_callback """
+        callback = default_callback
 
         tb_log_name = "ppo"
         log_path = os.path.join(log_dir, "ppo")  # or your custom folder
@@ -179,6 +179,6 @@ class Predictor:
         )
 
         model.save(
-            rl.helper.get_path_trained_model() / f"{name_prefix}"
+            rl.helper.get_path_trained_model() / f"{name_prefix}"/ "20000"
         )
         logger.info("✅ Final model saved.")
