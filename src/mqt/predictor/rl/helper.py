@@ -361,8 +361,8 @@ def get_state_sample(max_qubits: int | None = None) -> tuple[QuantumCircuit, str
 
         file_list = list(get_path_training_circuits().glob("*.qasm"))
         assert len(file_list) > 0 """
-    #base_path = get_path_training_circuits() / "mqt_bench_training"
-    base_path = get_path_training_circuits() / "training_data_compilation"
+    base_path = get_path_training_circuits() / "mqt_bench_training"
+    #base_path = get_path_training_circuits() / "training_data_compilation"
     file_list = list(base_path.rglob("*.qasm"))
 
     found_suitable_qc = False

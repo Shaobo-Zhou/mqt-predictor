@@ -118,6 +118,7 @@ class Predictor:
         verbose: int = 2,
         test: bool = False,
         trained: int = 0,
+        save_name: str = "default",
         custom_callbacks: list[BaseCallback] = None,
     ) -> None:
         """Train or resume model training with offset checkpointing."""
@@ -126,7 +127,7 @@ class Predictor:
 
         name_prefix = f"{model_name}_{self.figure_of_merit}_{self.device_name}"
         log_dir = f"./{name_prefix}"
-        ckpt_path = f"./checkpoints/{name_prefix}_{trained}_steps.zip"
+        ckpt_path = f"./checkpoints/{save_name}/{name_prefix}_{trained}_steps.zip"
         
         logger.debug(f"🔁 Checking for checkpoint: {ckpt_path}")
 
@@ -152,22 +153,20 @@ class Predictor:
 
         remaining = timesteps - trained
 
-        default_callback = OffsetCheckpointCallback(
-            save_freq=n_steps,
+        """ if custom_callbacks:
+            callback = CallbackList([default_callback] + custom_callbacks)
+        else:
+            callback = default_callback """
+        callback = OffsetCheckpointCallback(
+            save_freq=n_steps,  # matches rollout length
             save_path="./checkpoints",
             name_prefix=name_prefix,
             offset=trained,
             verbose=1,
         )
 
-        """ if custom_callbacks:
-            callback = CallbackList([default_callback] + custom_callbacks)
-        else:
-            callback = default_callback """
-        callback = default_callback
-
         tb_log_name = "ppo"
-        log_path = os.path.join(log_dir, "ppo")  # or your custom folder
+        log_path = os.path.join(log_dir, "ppo") 
         new_logger = configure(folder=log_path, format_strings=["stdout", "tensorboard"])
         model.set_logger(new_logger)
 
@@ -179,6 +178,6 @@ class Predictor:
         )
 
         model.save(
-            rl.helper.get_path_trained_model() / f"{name_prefix}"/ "20000"
+            rl.helper.get_path_trained_model() / f"{name_prefix}"/ save_name
         )
         logger.info("✅ Final model saved.")

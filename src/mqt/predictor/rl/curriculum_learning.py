@@ -8,13 +8,8 @@ import json
 from mqt.predictor import reward
 from predictor import Predictor
 
-# Setup minimal logger
 logger = logging.getLogger("mqt-predictor")
-logger.setLevel(logging.INFO)
-if not logger.hasHandlers():
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-    logger.addHandler(handler)
+
 
 
 def create_curriculum_with_equal_weights():
@@ -61,14 +56,14 @@ def run_training_on_equal_curriculum(curriculum_path: Path):
     )
 
     rl_pred.train_model(
-        timesteps=2048,
+        timesteps=20480,
         trained=0,
         verbose=2,
-        custom_callbacks=[],
+        save_name = "curr"
     )
 
     # Export timing stats
-    rl_pred.env.export_action_timings("action_timings.json")
+    #rl_pred.env.export_action_timings("action_timings.json")
 
 if __name__ == "__main__":
     curriculum_path = create_curriculum_with_equal_weights()
