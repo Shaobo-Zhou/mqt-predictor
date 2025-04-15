@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import gc
 import time
 import json
 import warnings
@@ -140,11 +141,12 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         logger.info(f"⏱️  [Step {self.num_steps}] Action '{action_name}' took {elapsed:.2f} seconds")
         # Store the timing
-        if action_name not in self.action_timings:
-            self.action_timings[action_name] = []
-        self.action_timings[action_name].append(elapsed)
-        altered_qc = self.apply_action(action)
+        # if action_name not in self.action_timings:
+        #     self.action_timings[action_name] = []
+        # self.action_timings[action_name].append(elapsed)
+
         if not altered_qc:
+            gc.collect()
             return (
                 rl.helper.create_feature_dict(self.state),
                 0,
@@ -174,6 +176,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         self.state._layout = self.layout  # noqa: SLF001
         obs = rl.helper.create_feature_dict(self.state)
+        gc.collect()
         return obs, reward_val, done, False, {}
 
     def export_action_timings(self, filepath: str = "action_timings.json"):
@@ -244,7 +247,9 @@ class PredictorEnv(Env):  # type: ignore[misc]
         elif qc:
             self.state = QuantumCircuit.from_qasm_file(str(qc))
         else:
-            self.state, self.filename = rl.helper.get_state_sample(self.device.num_qubits)
+            rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+            self.state, self.filename = rl.helper.get_state_sample(self.device.num_qubits, rng)
+            logger.info(f"🎯 Sampled circuit: {self.filename}")
 
         self.action_space = Discrete(len(self.action_set.keys()))
         self.num_steps = 0

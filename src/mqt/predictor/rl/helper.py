@@ -197,6 +197,7 @@ def get_actions_opt() -> list[dict[str, Any]]:
                 circuit,
                 optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
                 synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
                 max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
                 seed=10,
             ), 
@@ -305,6 +306,7 @@ def get_actions_mapping() -> list[dict[str, Any]]:
                 with_mapping=True,
                 optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
                 synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
                 max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
                 seed=10,
             ),
@@ -330,6 +332,7 @@ def get_actions_synthesis() -> list[dict[str, Any]]:
                 model=MachineModel(bqskit_circuit.num_qudits, gate_set=get_bqskit_native_gates(device)),
                 optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
                 synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
                 max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
                 seed=10,
             ),
@@ -343,7 +346,7 @@ def get_action_terminate() -> dict[str, Any]:
     return {"name": "terminate"}
 
 
-def get_state_sample(max_qubits: int | None = None) -> tuple[QuantumCircuit, str]:
+def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> tuple[QuantumCircuit, str]:
     """Returns a random quantum circuit from the training circuits folder.
 
     Arguments:
@@ -361,13 +364,20 @@ def get_state_sample(max_qubits: int | None = None) -> tuple[QuantumCircuit, str
 
         file_list = list(get_path_training_circuits().glob("*.qasm"))
         assert len(file_list) > 0 """
-    base_path = get_path_training_circuits() / "mqt_bench_training"
-    #base_path = get_path_training_circuits() / "training_data_compilation"
+    #base_path = get_path_training_circuits() / "mqt_bench_training"
+    base_path = get_path_training_circuits() / "training_data_compilation"
     file_list = list(base_path.rglob("*.qasm"))
 
+    # found_suitable_qc = False
+    # while not found_suitable_qc:
+    #     rng = np.random.default_rng(10)
+    #     random_index = rng.integers(len(file_list))
+    #     num_qubits = int(str(file_list[random_index]).split("_")[-1].split(".")[0])
+    #     if max_qubits and num_qubits > max_qubits:
+    #         continue
+    #     found_suitable_qc = True
     found_suitable_qc = False
     while not found_suitable_qc:
-        rng = np.random.default_rng(10)
         random_index = rng.integers(len(file_list))
         num_qubits = int(str(file_list[random_index]).split("_")[-1].split(".")[0])
         if max_qubits and num_qubits > max_qubits:

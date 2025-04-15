@@ -81,6 +81,7 @@ class Predictor:
     def compile_as_predicted(
         self,
         qc: QuantumCircuit,
+        file_name: str,
     ) -> tuple[QuantumCircuit, list[str]]:
         """Compiles a given quantum circuit such that the given figure of merit is maximized by using the respectively trained optimized compiler.
 
@@ -90,7 +91,11 @@ class Predictor:
         Returns:
             A tuple containing the compiled quantum circuit and the compilation information. If compilation fails, False is returned.
         """
-        trained_rl_model = rl.helper.load_model("model_" + self.figure_of_merit + "_" + self.device_name)
+        folder = rl.helper.get_path_trained_model()
+        model_path = folder / file_name
+
+        #trained_rl_model = rl.helper.load_model("model_" + self.figure_of_merit + "_" + self.device_name)
+        trained_rl_model = rl.helper.load_model(str(model_path))
 
         obs, _ = self.env.reset(qc, seed=0)
 
@@ -106,7 +111,7 @@ class Predictor:
             obs, _reward_val, terminated, truncated, _info = self.env.step(action)
 
         if not self.env.error_occurred:
-            return self.env.state, used_compilation_passes
+            return self.env.state, _reward_val, used_compilation_passes
 
         msg = "Error occurred during compilation."
         raise RuntimeError(msg)
@@ -127,8 +132,10 @@ class Predictor:
 
         name_prefix = f"{model_name}_{self.figure_of_merit}_{self.device_name}"
         log_dir = f"./{name_prefix}"
-        ckpt_path = f"./checkpoints/{save_name}/{name_prefix}_{trained}_steps.zip"
-        
+        checkpoint_dir = f"./checkpoints/{save_name}"
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        ckpt_path = os.path.join(checkpoint_dir, f"{name_prefix}_{trained}_steps.zip")
         logger.debug(f"🔁 Checking for checkpoint: {ckpt_path}")
 
         if os.path.exists(ckpt_path):
@@ -158,15 +165,17 @@ class Predictor:
         else:
             callback = default_callback """
         callback = OffsetCheckpointCallback(
-            save_freq=n_steps,  # matches rollout length
-            save_path="./checkpoints",
+            save_freq=n_steps,
+            save_path=checkpoint_dir, 
             name_prefix=name_prefix,
             offset=trained,
             verbose=1,
         )
+        os.makedirs(f"./checkpoints/{save_name}", exist_ok=True)
+
 
         tb_log_name = "ppo"
-        log_path = os.path.join(log_dir, "ppo") 
+        log_path = os.path.join(log_dir, save_name,"ppo") 
         new_logger = configure(folder=log_path, format_strings=["stdout", "tensorboard"])
         model.set_logger(new_logger)
 
@@ -177,7 +186,8 @@ class Predictor:
             progress_bar=progress_bar,
         )
 
-        model.save(
-            rl.helper.get_path_trained_model() / f"{name_prefix}"/ save_name
-        )
+        save_path = rl.helper.get_path_trained_model() / save_name
+        save_path.mkdir(parents=True, exist_ok=True)
+        model.save(save_path / f"{name_prefix}")
+
         logger.info("✅ Final model saved.")
