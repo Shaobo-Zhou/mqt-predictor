@@ -196,8 +196,8 @@ def get_actions_opt() -> list[dict[str, Any]]:
             "transpile_pass": lambda circuit: bqskit_compile(
                 circuit,
                 optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
                 max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
                 seed=10,
             ), 
@@ -305,8 +305,8 @@ def get_actions_mapping() -> list[dict[str, Any]]:
                 ),
                 with_mapping=True,
                 optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
                 max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
                 seed=10,
             ),
@@ -331,8 +331,8 @@ def get_actions_synthesis() -> list[dict[str, Any]]:
                 bqskit_circuit,
                 model=MachineModel(bqskit_circuit.num_qudits, gate_set=get_bqskit_native_gates(device)),
                 optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
+                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
                 max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
                 seed=10,
             ),
@@ -364,8 +364,10 @@ def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> t
 
         file_list = list(get_path_training_circuits().glob("*.qasm"))
         assert len(file_list) > 0 """
+    
+    base_path = get_path_training_circuits() / "mqt_bench_training_30"
     #base_path = get_path_training_circuits() / "mqt_bench_training"
-    base_path = get_path_training_circuits() / "training_data_compilation"
+    #base_path = get_path_training_circuits() / "training_data_compilation"
     file_list = list(base_path.rglob("*.qasm"))
 
     # found_suitable_qc = False

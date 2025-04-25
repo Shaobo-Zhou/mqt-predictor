@@ -176,6 +176,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         self.state._layout = self.layout  # noqa: SLF001
         obs = rl.helper.create_feature_dict(self.state)
+        del altered_qc
         gc.collect()
         return obs, reward_val, done, False, {}
 
@@ -210,6 +211,17 @@ class PredictorEnv(Env):  # type: ignore[misc]
         self.curriculum_bins = df["complexity_bin"].unique()
         self.curriculum_sampling_enabled = enable_sampling
         self.current_difficulty_level = 0
+
+    def increase_curriculum_difficulty(self) -> bool:
+        """Increase difficulty level if possible, return True if updated."""
+        if not self.curriculum_sampling_enabled:
+            return False
+        if self.current_difficulty_level < (self.max_difficulty_level - 1): ### Ignore extreme cases
+            self.current_difficulty_level += 1
+            logger.info(f"📈 Difficulty increased to level {self.current_difficulty_level}")
+            return True
+        logger.info("🔒 Already at maximum difficulty level.")
+        return False
     def reset(
         self,
         qc: Path | str | QuantumCircuit | None = None,

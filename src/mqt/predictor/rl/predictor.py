@@ -127,7 +127,7 @@ class Predictor:
         custom_callbacks: list[BaseCallback] = None,
     ) -> None:
         """Train or resume model training with offset checkpointing."""
-        n_steps = 10 if test else 2048
+        n_steps = 10 if test else 1000
         progress_bar = not test
 
         name_prefix = f"{model_name}_{self.figure_of_merit}_{self.device_name}"

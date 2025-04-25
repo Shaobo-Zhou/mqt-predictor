@@ -1,11 +1,24 @@
 from mqt.bench import get_benchmark
+from mqt.predictor import reward, rl
 from predictor import Predictor
-from mqt.predictor import reward, rl, qcompile
-import argparse
+from mqt.bench.devices import get_device_by_name
+from qiskit import QuantumCircuit, transpile
+from pytket.extensions.qiskit import qiskit_to_tk, tk_to_qiskit
+from pytket.passes import (
+    FullPeepholeOptimise, RemoveRedundancies, CliffordSimp, SequencePass, DecomposeBoxes, RoutingPass
+)
+from pytket.placement import GraphPlacement
+from pytket.architecture import Architecture
+
 from pathlib import Path
+import pandas as pd
+import argparse
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pandas as pd
+
+from tqdm import tqdm
+import gc
+import psutil, os
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate RL Predictor for Quantum Compilation")
@@ -25,26 +38,78 @@ if __name__ == "__main__":
     base_path = rl.helper.get_path_training_circuits() / "training_data_compilation"
     file_list = list(base_path.rglob("*.qasm"))
     model_path = Path("bqskit_4") / "rl_expected_fidelity_ibm_washington"
+    #model_path = Path("nobqskit") / "rl_expected_fidelity_ibm_washington"
 
-    rewards = []
+
+    results = []
+    failed = []
+
+
+    for idx, file in enumerate(tqdm(file_list, desc="Evaluating circuits"), 1):
+        try:
+            qc = QuantumCircuit.from_qasm_file(str(file))
+
+            # Pre-filter (optional)
+            # if qc.depth() > 15000 or qc.size() > 15000:
+            #     print(f"⚠️ Skipping large circuit: {file.name}")
+            #     continue
+
+            num_qubits = qc.num_qubits
+            depth = qc.depth()
+            gate_count = qc.size()
+
+            _, reward_val, compilation_information = rl_pred.compile_as_predicted(qc, model_path)
+
+            results.append({
+                "filename": file.name,
+                "num_qubits": num_qubits,
+                "depth": depth,
+                "gate_count": gate_count,
+                "reward": reward_val,
+                "ep_len": len(compilation_information)
+            })
+
+            print(f"[{idx}/{len(file_list)}] ✅ {file.name} | "
+                f"Reward: {reward_val:.4f} | Qubits: {num_qubits}, Depth: {depth}, Gates: {gate_count} ")
+
+        except Exception as e:
+            failed.append({"filename": file.name, "error": str(e)})
+            print(f"[{idx}/{len(file_list)}] ❌ Failed on {file.name}: {e}")
+
+        finally:
+            del qc
+            gc.collect()
+
+    # --- Save Results ---
+    df = pd.DataFrame(results)
+    df.to_csv("training_rewards.csv", index=False)
+    print("📁 Saved reward data to training_rewards.csv")
+
+    if failed:
+        pd.DataFrame(failed).to_csv("failed_circuits.csv", index=False)
+        print("📁 Saved failed circuits to failed_circuits.csv")
+
+    # --- Plotting ---
+    def plot_metric(metric: str, ylabel: str):
+        plt.figure(figsize=(10, 6))
+        sns.scatterplot(data=df.sort_values(metric), x=metric, y="reward", marker="o")
+        plt.title(f"Reward vs. {ylabel}")
+        plt.xlabel(ylabel)
+        plt.ylabel("Reward")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(f"reward_vs_{metric}.png")
+        plt.show()
+
+    plot_metric("num_qubits", "Number of Qubits")
+    plot_metric("depth", "Circuit Depth")
+    plot_metric("gate_count", "Gate Count")
+
+
+    """ rewards = []
     failed = []
     ep_lengths = []
 
-    """ for idx, file in enumerate(file_list, 1):
-        try:
-            _, reward_val, compilation_information = rl_pred.compile_as_predicted(file, model_path)
-            rewards.append(reward_val)
-            ep_lengths.append(len(compilation_information))
-            
-            # Compute current averages
-            average_reward = sum(rewards) / len(rewards)
-            average_ep_length = sum(ep_lengths) / len(ep_lengths)
-
-            print(f"[{idx}/{len(file_list)}] ✅ {file.name} | Reward: {reward_val:.4f} | "
-                f"Avg Reward: {average_reward:.4f} | Avg Ep Len: {average_ep_length:.2f}")
-        except Exception as e:
-            failed.append((file, str(e)))
-            print(f"[{idx}/{len(file_list)}] ❌ Failed on {file.name}: {e}") """
     for i in range(2, 31):
         try:
             qc = get_benchmark("ghz", level="indep", circuit_size=i)
@@ -84,7 +149,7 @@ if __name__ == "__main__":
     })
 
     # Save to CSV
-    df.to_csv("ghz_rewards.csv", index=False)
+    #df.to_csv("ghz_rewards.csv", index=False)
     print("📁 Saved rewards to ghz_rewards.csv")
     circuit_sizes = list(range(2, 2 + len(rewards)))  # Assuming rewards list is aligned with qubit sizes
 
@@ -96,3 +161,4 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+ """

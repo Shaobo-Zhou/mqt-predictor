@@ -54,10 +54,10 @@ def check_is_connected():
     print(f"\n✅ Done. Found {len(disconnected_circuits)} disconnected graphs.")
 
 def load_all_features_to_csv(max_qubits: int = None):
-    base_path = get_path_training_circuits() / "mqt_bench_training"
+    base_path = get_path_training_circuits() / "mqt_bench_training_30"
     file_list = list(base_path.rglob("*.qasm"))
     
-    output_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics.csv"
+    output_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics_30.csv"
     columns = [
         "file", "num_qubits", "depth", "gate_count",
         "program_communication", "parallelism", "entanglement_ratio", "liveness",
@@ -158,6 +158,60 @@ df["bin_qubits_gates"] = pd.qcut(df["complexity_qubits_gates"], q=5, labels=["ve
 output_path = Path(__file__).resolve().parent / "circuit_complexity_metrics.csv"
 df.to_csv(output_path, index=False) """
 
+
+path = Path(__file__).resolve().parent /"ig_circuit_complexity_metrics_30.csv"
+df = pd.read_csv(path)
+
+df["log_gate_count"] = np.log1p(df["gate_count"])
+df["log_avg_hopcount"] = np.log1p(df["avg_hopcount"])
+df["log_adj_std"] = np.log1p(df["adj_std"])
+df["log_depth"] = np.log1p(df["depth"])
+
+metrics_row1 = ["num_qubits", "gate_count", "depth"]
+metrics_row2 = ["avg_hopcount", "max_degree", "min_degree"]
+
+# Total number of subplots in each row
+ncols = max(len(metrics_row1), len(metrics_row2))
+
+# Create figure with 2 rows and ncols columns
+fig, axes = plt.subplots(2, ncols, figsize=(6 * ncols, 10))
+
+# Make sure axes is 2D even if ncols = 1
+axes = axes.reshape(2, ncols)
+
+# --- Plot Row 1 ---
+for i, metric in enumerate(metrics_row1):
+    ax = axes[0, i]
+    sns.violinplot(y=df[metric].dropna(), ax=ax, inner="box", color="skyblue", cut=0, linewidth=1)
+    ax.set_title(metric.replace("_", " ").title())
+    ax.set_xticks([])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+
+    if metric not in {"num_qubits", "gate_count", "depth"}:
+        ax.axhline(0, color="gray", linestyle="--", linewidth=1)
+        ax.axhline(1, color="gray", linestyle="--", linewidth=1)
+        ax.set_ylim(-0.2, 1.2)
+
+# --- Plot Row 2 ---
+for i, metric in enumerate(metrics_row2):
+    ax = axes[1, i]
+    sns.violinplot(y=df[metric].dropna(), ax=ax, inner="box", color="skyblue", cut=0, linewidth=1)
+    ax.set_title(metric.replace("_", " ").title())
+    ax.set_xticks([])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+
+# --- Hide any unused subplots in Row 2 ---
+for j in range(len(metrics_row2), ncols):
+    fig.delaxes(axes[1, j])
+
+plt.suptitle("Distribution of Circuit Features", fontsize=18)
+plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+plt.subplots_adjust(hspace=0.5, wspace=0.4)
+plt.show()
 # --- Plot each complexity metric ---
 def plot_complexity_distribution(col, title):
     plt.figure(figsize=(8, 5))
@@ -181,7 +235,7 @@ def plot_complexity_distribution(col, title):
 
 #check_is_connected()
 # --- Load data ---
-output_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics.csv"
+""" output_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics.csv"
 #load_all_features_to_csv()
 final_path = Path(__file__).resolve().parent /"ig_circuit_complexity_metrics_final.csv"
 df = pd.read_csv(output_path)
@@ -288,4 +342,4 @@ for j in range(len(metrics_row2), ncols):
 plt.suptitle("Distribution of Circuit Features", fontsize=18)
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.subplots_adjust(hspace=0.5, wspace=0.4)
-plt.show()
+plt.show() """
