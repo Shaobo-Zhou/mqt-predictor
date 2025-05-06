@@ -208,7 +208,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
     def set_curriculum_data(self, df: pd.DataFrame, enable_sampling: bool = True):
         """Load the curriculum dataframe and enable/disable sampling."""
         self.curriculum_df = df
-        self.curriculum_bins = df["complexity_bin"].unique()
+        bin_order = ["very_easy", "easy", "medium", "hard", "very_hard"]
+        self.curriculum_bins = [b for b in bin_order if b in df["complexity_bin"].unique()]
         self.curriculum_sampling_enabled = enable_sampling
         self.current_difficulty_level = 0
 

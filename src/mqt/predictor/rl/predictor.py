@@ -24,7 +24,7 @@ logger = logging.getLogger("mqt-predictor")
 PATH_LENGTH = 260
 
 
-class OffsetCheckpointCallback(BaseCallback):
+""" class OffsetCheckpointCallback(BaseCallback):
     def __init__(self, save_freq, save_path, name_prefix, offset=0, verbose=0):
         super().__init__(verbose)
         self.save_freq = save_freq
@@ -40,6 +40,65 @@ class OffsetCheckpointCallback(BaseCallback):
             if self.verbose > 0:
                 print(f"✅ Saved checkpoint: {path}")
         return True
+ """
+class CurriculumProgressionCallback(BaseCallback):
+    def __init__(self, env: rl.PredictorEnv, threshold=0.3, check_freq=50, verbose=1):
+        super().__init__(verbose)
+        self.env = env
+        self.default_threshold = threshold
+        self.thresholds_by_level = {
+            0: 0.723,   # very_easy
+            1: 0.354,   # easy
+            2: 0.197,   # medium
+            3: 0.101,   # hard
+            4: 0.017    # very_hard
+        }
+        self.check_freq = check_freq
+        self.margin = 0.02
+        self.near_threshold_limit = 2
+        self.near_threshold_count = 0           
+        self.episode_rewards = []
+
+    def _on_step(self) -> bool:
+        if self.locals.get("infos"):
+            for info in self.locals["infos"]:
+                if "episode" in info:
+                    rewards = info["episode"]["r"]
+                    #logger.info(f"Current episode reward is {rewards}")
+                    self.episode_rewards.append(rewards)
+        return True
+    def _on_rollout_end(self) -> None:
+        if len(self.episode_rewards) >= self.check_freq:
+            avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
+
+            current_level = self.env.current_difficulty_level
+            threshold = self.thresholds_by_level.get(current_level, self.default_threshold)
+
+            if self.verbose:
+                logger.info(f"[Curriculum] 📊 Avg reward: {avg_reward:.4f} | Threshold: {threshold:.4f}")
+
+            if avg_reward >= threshold:
+                promote = True
+            elif threshold - self.margin <= avg_reward < threshold:
+                self.near_threshold_count += 1
+                if self.verbose:
+                    logger.info(f"[Curriculum] ⚠️ Near threshold ({self.near_threshold_count}/{self.near_threshold_limit})")
+                promote = self.near_threshold_count >= self.near_threshold_limit
+            else:
+                self.near_threshold_count = 0
+                promote = False
+
+            if promote:
+                updated = self.env.increase_curriculum_difficulty()
+                if updated and self.verbose:
+                    logger.info(f"[Curriculum] 🔼 Promoted to difficulty level {self.env.current_difficulty_level}")
+                self.near_threshold_count = 0
+        else:
+            if self.verbose:
+                logger.info(f"[Curriculum] ⏳ Waiting for more episodes... ({len(self.episode_rewards)}/{self.check_freq})")
+
+        self.episode_rewards = []
+
 
 
 class OffsetLogger(Logger):
@@ -61,6 +120,8 @@ class OffsetLogger(Logger):
         if key == "time/total_timesteps":
             value += self.trained_offset
         super().record(key, value, exclude, include)
+
+
 class Predictor:
     """The Predictor class is used to train a reinforcement learning model for a given figure of merit and device such that it acts as a compiler."""
 
@@ -127,7 +188,7 @@ class Predictor:
         custom_callbacks: list[BaseCallback] = None,
     ) -> None:
         """Train or resume model training with offset checkpointing."""
-        n_steps = 10 if test else 1000
+        n_steps = 10 if test else 2048
         progress_bar = not test
 
         name_prefix = f"{model_name}_{self.figure_of_merit}_{self.device_name}"
@@ -160,20 +221,20 @@ class Predictor:
 
         remaining = timesteps - trained
 
-        """ if custom_callbacks:
-            callback = CallbackList([default_callback] + custom_callbacks)
-        else:
-            callback = default_callback """
-        callback = OffsetCheckpointCallback(
+        """ 
+            callback = OffsetCheckpointCallback(
             save_freq=n_steps,
             save_path=checkpoint_dir, 
             name_prefix=name_prefix,
             offset=trained,
             verbose=1,
-        )
+        ) """
         os.makedirs(f"./checkpoints/{save_name}", exist_ok=True)
-
-
+        """callbacks = []
+        if custom_callbacks:
+            callbacks.extend(custom_callbacks)
+        callback = CallbackList(callbacks) """
+        callback = CurriculumProgressionCallback(env=self.env, threshold=0.3, check_freq=50)
         tb_log_name = "ppo"
         log_path = os.path.join(log_dir, save_name,"ppo") 
         new_logger = configure(folder=log_path, format_strings=["stdout", "tensorboard"])
