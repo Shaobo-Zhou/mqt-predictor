@@ -54,10 +54,10 @@ def check_is_connected():
     print(f"\n✅ Done. Found {len(disconnected_circuits)} disconnected graphs.")
 
 def load_all_features_to_csv(max_qubits: int = None):
-    base_path = get_path_training_circuits() / "mqt_bench_training_30"
+    base_path = get_path_training_circuits() / "training_data_compilation"
     file_list = list(base_path.rglob("*.qasm"))
     
-    output_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics_30.csv"
+    output_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics_orig.csv"
     columns = [
         "file", "num_qubits", "depth", "gate_count",
         "program_communication", "parallelism", "entanglement_ratio", "liveness",
@@ -128,7 +128,7 @@ def load_all_features_to_csv(max_qubits: int = None):
 
     print(f"\n✅ Done. Results saved to: {output_path}")
 
-#load_all_features_to_csv()
+load_all_features_to_csv()
 """ # Load features
 df = load_all_features()
 output_path = Path(__file__).resolve().parent / "circuit_complexity_metrics.csv"
@@ -158,17 +158,28 @@ df["bin_qubits_gates"] = pd.qcut(df["complexity_qubits_gates"], q=5, labels=["ve
 output_path = Path(__file__).resolve().parent / "circuit_complexity_metrics.csv"
 df.to_csv(output_path, index=False) """
 
-
+"""
 path = Path(__file__).resolve().parent /"ig_circuit_complexity_metrics_30.csv"
 df = pd.read_csv(path)
 
-df["log_gate_count"] = np.log1p(df["gate_count"])
-df["log_avg_hopcount"] = np.log1p(df["avg_hopcount"])
-df["log_adj_std"] = np.log1p(df["adj_std"])
-df["log_depth"] = np.log1p(df["depth"])
+#df["log_gate_count"] = np.log1p(df["gate_count"])
+#df["log_avg_hopcount"] = np.log1p(df["avg_hopcount"])
+#df["log_adj_std"] = np.log1p(df["adj_std"])
+#df["log_depth"] = np.log1p(df["depth"])
+df["log_num_qubits"] = np.log1p(df["num_qubits"])
 
-metrics_row1 = ["num_qubits", "gate_count", "depth"]
-metrics_row2 = ["avg_hopcount", "max_degree", "min_degree"]
+scaler = MinMaxScaler()
+df["log_gate_count_norm"] = scaler.fit_transform(df[["log_gate_count"]])
+df["log_avg_hopcount_norm"] = scaler.fit_transform(df[["log_avg_hopcount"]])
+df["log_avg_hopcount_norm"] = scaler.fit_transform(df[["log_avg_hopcount"]])
+df["log_depth_norm"] = scaler.fit_transform(df[["log_depth"]])
+df["log_adj_std_norm"] = scaler.fit_transform(df[["log_adj_std"]])
+df["log_num_qubits_norm"] = scaler.fit_transform(df[["num_qubits"]])
+
+df.to_csv(path, index=False)
+ """
+""" metrics_row1 = ["log_num_qubits", "log_gate_count", "log_depth"]
+metrics_row2 = ["log_avg_hopcount", "max_degree", "min_degree"]
 
 # Total number of subplots in each row
 ncols = max(len(metrics_row1), len(metrics_row2))
@@ -189,7 +200,7 @@ for i, metric in enumerate(metrics_row1):
     ax.set_ylabel("")
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
 
-    if metric not in {"num_qubits", "gate_count", "depth"}:
+    if metric not in {"log_num_qubits", "log_gate_count", "log_depth"}:
         ax.axhline(0, color="gray", linestyle="--", linewidth=1)
         ax.axhline(1, color="gray", linestyle="--", linewidth=1)
         ax.set_ylim(-0.2, 1.2)
@@ -227,8 +238,9 @@ def plot_complexity_distribution(col, title):
     plt.ylabel("Count")
     plt.grid(True)
     plt.tight_layout()
+    plt.savefig("complexity_dist.png")
     plt.show()
-
+ """
 #plot_complexity_distribution("complexity", "Distribution: Full Feature Complexity")
 #plot_complexity_distribution("complexity_qubits_only", "Distribution: Qubit-Only Complexity")
 #plot_complexity_distribution("complexity_qubits_gates", "Distribution: Qubit + Gate Complexity")

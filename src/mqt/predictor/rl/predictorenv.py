@@ -32,6 +32,8 @@ from qiskit.passmanager.flow_controllers import DoWhileController
 from qiskit.transpiler import CouplingMap, PassManager, TranspileLayout
 from qiskit.transpiler.passes import CheckMap, GatesInBasis
 from qiskit.transpiler.passes.layout.vf2_layout import VF2LayoutStopReason
+from qiskit.circuit.library.standard_gates import RCCXGate
+
 
 from mqt.bench.devices import get_device_by_name
 from mqt.predictor import reward, rl
@@ -62,7 +64,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
         self.curriculum_df = None
         self.curriculum_bins = None
         self.current_difficulty_level = 0
-        self.max_difficulty_level = 4  # 0 = very_easy, 4 = very_hard
+        self.max_difficulty_level = 4  
         self.curriculum_sampling_enabled = False
         # check for uni-directional coupling map
         for a, b in self.device.coupling_map:
@@ -217,7 +219,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
         """Increase difficulty level if possible, return True if updated."""
         if not self.curriculum_sampling_enabled:
             return False
-        if self.current_difficulty_level < (self.max_difficulty_level - 1): ### Ignore extreme cases
+        if self.current_difficulty_level < (self.max_difficulty_level): ### Ignore extreme cases
             self.current_difficulty_level += 1
             logger.info(f"📈 Difficulty increased to level {self.current_difficulty_level}")
             return True
@@ -370,6 +372,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
             elif action["origin"] == "tket":
                 try:
+                    if any(isinstance(gate[0], RCCXGate) for gate in self.state.data):
+                        self.state = self.state.decompose()
                     tket_qc = qiskit_to_tk(self.state, preserve_param_uuid=True)
                     for elem in transpile_pass:
                         elem.apply(tket_qc)

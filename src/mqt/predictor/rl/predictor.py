@@ -7,6 +7,7 @@ import os
 import sys
 import pandas as pd
 from typing import TYPE_CHECKING
+from pathlib import Path
 
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.policies import MaskableMultiInputActorCriticPolicy
@@ -42,40 +43,67 @@ PATH_LENGTH = 260
         return True
  """
 class CurriculumProgressionCallback(BaseCallback):
-    def __init__(self, env: rl.PredictorEnv, threshold=0.3, check_freq=50, verbose=1):
+    def __init__(
+        self,
+        env: rl.PredictorEnv,
+        threshold: float = 0.3,
+        check_freq: int = 50,
+        verbose: int = 1,
+        save_dir: str = "./checkpoints/curriculum_progression",
+        thresholds_by_level: dict[int, float] = None,
+        margin: float = 0.02,
+        near_threshold_limit: int = 2,
+        final_level_no_improve_limit: int = 3,
+    ):
         super().__init__(verbose)
         self.env = env
         self.default_threshold = threshold
-        self.thresholds_by_level = {
-            0: 0.723,   # very_easy
-            1: 0.354,   # easy
-            2: 0.197,   # medium
-            3: 0.101,   # hard
-            4: 0.017    # very_hard
-        }
         self.check_freq = check_freq
-        self.margin = 0.02
-        self.near_threshold_limit = 2
-        self.near_threshold_count = 0           
+        self.save_dir = save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        self.margin = margin
+        self.near_threshold_limit = near_threshold_limit
+        self.final_level_no_improve_limit = final_level_no_improve_limit
+
+        
+
+        self.max_level = self.env.max_difficulty_level
+        self.thresholds_by_level = thresholds_by_level or {
+            0: 0.723,
+            1: 0.354,
+            2: 0.197,
+            3: 0.101,
+            4: 0.017,
+        }
+
+        self.near_threshold_count = 0
         self.episode_rewards = []
+        self.stop_training_now = False
+        self.best_final_level_reward = float("-inf")
+        self.final_level_no_improve_count = 0
 
     def _on_step(self) -> bool:
+        if self.stop_training_now:
+            return False
+        
         if self.locals.get("infos"):
             for info in self.locals["infos"]:
                 if "episode" in info:
                     rewards = info["episode"]["r"]
-                    #logger.info(f"Current episode reward is {rewards}")
                     self.episode_rewards.append(rewards)
         return True
-    def _on_rollout_end(self) -> None:
+
+    """ def _on_rollout_end(self) -> None:
         if len(self.episode_rewards) >= self.check_freq:
             avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
-
             current_level = self.env.current_difficulty_level
             threshold = self.thresholds_by_level.get(current_level, self.default_threshold)
 
             if self.verbose:
                 logger.info(f"[Curriculum] 📊 Avg reward: {avg_reward:.4f} | Threshold: {threshold:.4f}")
+
+            promote = False
 
             if avg_reward >= threshold:
                 promote = True
@@ -86,41 +114,147 @@ class CurriculumProgressionCallback(BaseCallback):
                 promote = self.near_threshold_count >= self.near_threshold_limit
             else:
                 self.near_threshold_count = 0
-                promote = False
 
             if promote:
-                updated = self.env.increase_curriculum_difficulty()
-                if updated and self.verbose:
-                    logger.info(f"[Curriculum] 🔼 Promoted to difficulty level {self.env.current_difficulty_level}")
-                self.near_threshold_count = 0
+                if current_level < self.max_level:
+                    updated = self.env.increase_curriculum_difficulty()
+                    if updated:
+                        if self.verbose:
+                            logger.info(f"[Curriculum] 🔼 Promoted to difficulty level {self.env.current_difficulty_level}")
+                        save_path = os.path.join(self.save_dir, f"model_level_{self.env.current_difficulty_level}.zip")
+                        self.model.save(save_path)
+                        logger.info(f"[Curriculum] 💾 Saved model to: {save_path}")
+                        self.near_threshold_count = 0
+                else:  # Final level
+                    self.final_level_saturation_count += 1
+                    logger.info(f"[Curriculum] 💤 Saturation count at final level: {self.final_level_saturation_count}/{self.final_level_saturation_limit}")
+                    if self.final_level_saturation_count >= self.final_level_saturation_limit:
+                        logger.info("✅ Final level saturated — stopping training.")
+                        self.stop_training_now = True
+            else:
+                self.final_level_saturation_count = 0  # reset if no progress
+
         else:
             if self.verbose:
                 logger.info(f"[Curriculum] ⏳ Waiting for more episodes... ({len(self.episode_rewards)}/{self.check_freq})")
 
+        self.episode_rewards = [] """
+    def _on_rollout_end(self) -> None:
+        if len(self.episode_rewards) < self.check_freq:
+            if self.verbose:
+                logger.info(f"[Curriculum] ⏳ Waiting for more episodes... ({len(self.episode_rewards)}/{self.check_freq})")
+            return
+
+        avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
+        current_level = self.env.current_difficulty_level
+        threshold = self.thresholds_by_level.get(current_level, self.default_threshold)
+
+        if self.verbose:
+            logger.info(f"[Curriculum] 📊 Avg reward: {avg_reward:.4f} | Threshold: {threshold:.4f}")
+
+        # --- Final level saturation logic ---
+        if current_level == self.max_level:
+            if avg_reward > self.best_final_level_reward + 1e-5:
+                self.best_final_level_reward = avg_reward
+                self.final_level_no_improve_count = 0
+                logger.info(f"[Curriculum] 📈 New best reward at final level: {avg_reward:.4f}")
+            else:
+                self.final_level_no_improve_count += 1
+                logger.info(f"[Curriculum] 💤 Final level not improving ({self.final_level_no_improve_count}/{self.final_level_no_improve_limit})")
+                if self.final_level_no_improve_count >= self.final_level_no_improve_limit:
+                    logger.info("✅ Final level saturated — stopping training.")
+                    self.stop_training_now = True
+        else:
+            # --- Promotion logic ---
+            promote = False
+            if avg_reward >= threshold:
+                promote = True
+            elif threshold - self.margin <= avg_reward < threshold:
+                self.near_threshold_count += 1
+                if self.verbose:
+                    logger.info(f"[Curriculum] ⚠️ Near threshold ({self.near_threshold_count}/{self.near_threshold_limit})")
+                promote = self.near_threshold_count >= self.near_threshold_limit
+
+            if promote:
+                updated = self.env.increase_curriculum_difficulty()
+                if updated:
+                    logger.info(f"[Curriculum] 🔼 Promoted to level {self.env.current_difficulty_level}")
+                    save_path = os.path.join(self.save_dir, f"model_level_{self.env.current_difficulty_level}.zip")
+                    self.model.save(save_path)
+                    logger.info(f"[Curriculum] 💾 Model saved: {save_path}")
+                    self.near_threshold_count = 0
+
         self.episode_rewards = []
 
 
+class SaturationCurriculumCallback(BaseCallback):
+    def __init__(
+        self,
+        env: rl.PredictorEnv,
+        check_freq: int = 50,
+        verbose: int = 1,
+        save_dir: str = "./checkpoints/curriculum_saturation",
+        saturation_patience: int = 3,
+        thresholds_by_level: dict[int, float] = None,
+    ):
+        super().__init__(verbose)
+        self.env = env
+        self.check_freq = check_freq
+        self.save_dir = save_dir
+        self.saturation_patience = saturation_patience
+        self.max_level = self.env.max_difficulty_level
+        self.thresholds_by_level = thresholds_by_level or {
+            0: 0.723,
+            1: 0.354,
+            2: 0.197,
+            3: 0.101,
+            4: 0.017,
+        }
 
-class OffsetLogger(Logger):
-    def __init__(self, trained_offset, folder, format_strings):
-        os.makedirs(folder, exist_ok=True)
-        output_formats = []
+        os.makedirs(self.save_dir, exist_ok=True)
 
-        for fmt in format_strings:
-            if fmt == "stdout":
-                output_formats.append(HumanOutputFormat(sys.stdout))
-            elif fmt == "tensorboard":
-                output_formats.append(TensorBoardOutputFormat(folder))
+        # Tracking improvement for each level
+        self.best_reward = float("-inf")
+        self.no_improve_count = 0
+        self.stop_training_now = False
 
-        self.trained_offset = trained_offset
-        # Fixed: `folder` must be passed to Logger
-        super().__init__(folder=folder, output_formats=output_formats)
+    def _on_step(self) -> bool:
+        return not self.stop_training_now
 
-    def record(self, key, value, exclude=(), include=None):
-        if key == "time/total_timesteps":
-            value += self.trained_offset
-        super().record(key, value, exclude, include)
+    def _on_rollout_end(self) -> None:
+        avg_reward = self.locals.get("rollout/ep_rew_mean", None)
+        if avg_reward is None:
+            if self.verbose:
+                logger.warning("[SaturationCurriculum] ⚠️ 'rollout/ep_rew_mean' missing in logger.")
+            return
 
+        level = self.env.current_difficulty_level
+        improved = avg_reward > self.best_reward + 1e-5
+
+        if improved:
+            self.best_reward = avg_reward
+            self.no_improve_count = 0
+            logger.info(f"[SaturationCurriculum] 📈 New best reward at level {level}: {avg_reward:.4f}")
+        else:
+            self.no_improve_count += 1
+            logger.info(f"[SaturationCurriculum] 💤 No improvement ({self.no_improve_count}/{self.saturation_patience})")
+
+        if self.no_improve_count >= self.saturation_patience:
+            if level < self.max_level:
+                updated = self.env.increase_curriculum_difficulty()
+                if updated:
+                    logger.info(f"[SaturationCurriculum] 🔼 Promoted to level {self.env.current_difficulty_level}")
+                    save_path = os.path.join(self.save_dir, f"model_level_{self.env.current_difficulty_level}.zip")
+                    self.model.save(save_path)
+                    logger.info(f"[SaturationCurriculum] 💾 Model saved: {save_path}")
+
+                    # Reset tracking for the new level
+                    self.best_reward = float("-inf")
+                    self.no_improve_count = 0
+            else:
+                logger.info("✅ Final level saturated — stopping training.")
+                self.stop_training_now = True
+                
 
 class Predictor:
     """The Predictor class is used to train a reinforcement learning model for a given figure of merit and device such that it acts as a compiler."""
@@ -185,7 +319,8 @@ class Predictor:
         test: bool = False,
         trained: int = 0,
         save_name: str = "default",
-        custom_callbacks: list[BaseCallback] = None,
+        resume_from_level: int = None,
+        resume_model_path: str = None,
     ) -> None:
         """Train or resume model training with offset checkpointing."""
         n_steps = 10 if test else 2048
@@ -199,17 +334,23 @@ class Predictor:
         ckpt_path = os.path.join(checkpoint_dir, f"{name_prefix}_{trained}_steps.zip")
         logger.debug(f"🔁 Checking for checkpoint: {ckpt_path}")
 
-        if os.path.exists(ckpt_path):
-            logger.info(f"📦 Loading checkpoint from {ckpt_path}")
+        # === Set resume curriculum level ===
+        if resume_from_level is not None:
+            self.env.current_difficulty_level = resume_from_level
+            logger.info(f"🔄 Resuming from curriculum level {resume_from_level}")
+
+        # === Load model ===
+        if resume_model_path and Path(resume_model_path).exists():
+            logger.info(f"📦 Loading model from {resume_model_path}")
             model = MaskablePPO.load(
-                ckpt_path,
+                resume_model_path,
                 env=self.env,
                 tensorboard_log=log_dir,
                 verbose=verbose,
-                device="cuda",  # or "cpu"
+                device="cuda",
             )
         else:
-            logger.info("🆕 No checkpoint found, starting fresh training")
+            logger.info("🆕 No model specified for resume, starting fresh training")
             model = MaskablePPO(
                 MaskableMultiInputActorCriticPolicy,
                 self.env,
@@ -234,7 +375,7 @@ class Predictor:
         if custom_callbacks:
             callbacks.extend(custom_callbacks)
         callback = CallbackList(callbacks) """
-        callback = CurriculumProgressionCallback(env=self.env, threshold=0.3, check_freq=50)
+        callback = CurriculumProgressionCallback(env=self.env, threshold=0.3, check_freq=50, save_dir=rl.helper.get_path_trained_model() / save_name)
         tb_log_name = "ppo"
         log_path = os.path.join(log_dir, save_name,"ppo") 
         new_logger = configure(folder=log_path, format_strings=["stdout", "tensorboard"])

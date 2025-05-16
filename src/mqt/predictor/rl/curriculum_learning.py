@@ -60,9 +60,12 @@ def run_training_on_equal_curriculum(curriculum_path: Path):
         timesteps=100000,
         trained=0,
         verbose=2,
-        save_name = "curr",
+        save_name = "curr_final",
+        #resume_from_level=4,
+        #resume_model_path="./checkpoints/curriculum_progression/model_level_4.zip"
     )
 
 if __name__ == "__main__":
     curriculum_path = create_curriculum_with_equal_weights()
+    curriculum_path = Path("curriculum_metrics_gate_count.csv")
     run_training_on_equal_curriculum(curriculum_path)
