@@ -54,10 +54,11 @@ def check_is_connected():
     print(f"\n✅ Done. Found {len(disconnected_circuits)} disconnected graphs.")
 
 def load_all_features_to_csv(max_qubits: int = None):
-    base_path = get_path_training_circuits() / "training_data_compilation"
+    #base_path = get_path_training_circuits() / "training_data_compilation"
+    base_path = get_path_training_circuits() / "supermarq"
     file_list = list(base_path.rglob("*.qasm"))
     
-    output_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics_orig.csv"
+    output_path = Path(__file__).resolve().parent / "metrics_supermarq.csv"
     columns = [
         "file", "num_qubits", "depth", "gate_count",
         "program_communication", "parallelism", "entanglement_ratio", "liveness",

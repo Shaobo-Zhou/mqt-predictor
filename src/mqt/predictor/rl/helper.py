@@ -45,10 +45,19 @@ from qiskit.transpiler.passes import (
     SabreLayout,
     Size,
     TrivialLayout,
+    
     UnitarySynthesis,
     VF2Layout,
     VF2PostLayout,
 )
+
+from qiskit_ibm_transpiler.ai.routing import AIRouting
+from qiskit_ibm_transpiler.ai.synthesis import (
+    AICliffordSynthesis,
+    AILinearFunctionSynthesis,
+    AIPermutationSynthesis,
+)
+
 from qiskit.transpiler.passes.layout.vf2_layout import VF2LayoutStopReason
 from sb3_contrib import MaskablePPO
 from tqdm import tqdm
@@ -201,8 +210,22 @@ def get_actions_opt() -> list[dict[str, Any]]:
                 max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
                 seed=10,
             ), 
-            "origin": "bqskit", 
-            
+            "origin": "bqskit",     
+        },
+        {
+            "name": "AICliffordSynthesis",
+            "transpile_pass": [AICliffordSynthesis()],
+            "origin": "qiskit_ai",
+        },
+        {
+            "name": "AILinearFunctionSynthesis",
+            "transpile_pass": [AILinearFunctionSynthesis()],
+            "origin": "qiskit_ai",
+        },
+        {
+            "name": "AIPermutationSynthesis",
+            "transpile_pass": [AIPermutationSynthesis()],
+            "origin": "qiskit_ai",
         },
     ]
 
@@ -281,6 +304,16 @@ def get_actions_routing() -> list[dict[str, Any]]:
             ],
             "origin": "tket",
         },
+        {
+            "name": "AIRouting",
+            "transpile_pass": lambda device: [AIRouting(
+                backend=device.backend,
+                optimization_level=2,
+                layout_mode="optimize",
+                local_mode=True
+            )],
+            "origin": "qiskit_ai",
+        },
     ]
 
 
@@ -338,6 +371,7 @@ def get_actions_synthesis() -> list[dict[str, Any]]:
             ),
             "origin": "bqskit",
         },
+        
     ]
 
 
