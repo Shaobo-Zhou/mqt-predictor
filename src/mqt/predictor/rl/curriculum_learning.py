@@ -14,7 +14,8 @@ def create_curriculum_with_equal_weights():
     logger.info("📊 Generating curriculum with equal weights...")
 
     weights = {
-        #"num_qubits_norm": 1.0,
+        "num_qubits_norm": 1.0,
+        "depth_norm": 1.0,
         #"log_gate_count_norm": 1.0,
         #"log_avg_hopcount_norm": 1.0,
         #"max_degree_norm": 1.0,
@@ -28,8 +29,7 @@ def create_curriculum_with_equal_weights():
     for key in weights:
         weights[key] /= total_weight
 
-    #file_path = Path(__file__).resolve().parent / "ig_circuit_complexity_metrics_30.csv"
-    file_path = Path(__file__).resolve().parent / "training_rewards.csv"
+    file_path = Path(__file__).resolve().parent / "train.csv"
     if not file_path.exists():
         raise FileNotFoundError(f"Could not find metrics file at {file_path}")
 
@@ -39,7 +39,7 @@ def create_curriculum_with_equal_weights():
         df["complexity_score"], q=5, labels=["very_easy", "easy", "medium", "hard", "very_hard"]
     )
 
-    output_path = Path("curriculum_metrics_gate_count.csv")
+    output_path = Path("curriculum_metrics_combined.csv")
     df.to_csv(output_path, index=False)
     logger.info(f"✅ Curriculum saved to: {output_path.resolve()}")
     return output_path
@@ -60,7 +60,8 @@ def run_training_on_equal_curriculum(curriculum_path: Path):
         timesteps=100000,
         trained=0,
         verbose=2,
-        save_name = "curr_final",
+        save_name = "curr_combined",
+        curriculum=True,
         #resume_from_level=4,
         #resume_model_path="./checkpoints/curriculum_progression/model_level_4.zip"
     )

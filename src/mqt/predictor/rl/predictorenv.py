@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import copy
 import sys
 import gc
 import time
@@ -40,13 +41,16 @@ from mqt.predictor import reward, rl
 from mqt.predictor.hellinger import get_hellinger_model_path
 
 logger = logging.getLogger("mqt-predictor")
+logger.propagate = False
 
 
 class PredictorEnv(Env):  # type: ignore[misc]
     """Predictor environment for reinforcement learning."""
 
     def __init__(
-        self, reward_function: reward.figure_of_merit = "expected_fidelity", device_name: str = "ibm_washington"
+        self, reward_function: reward.figure_of_merit = "expected_fidelity", device_name: str = "ibm_washington",
+        reward_neg: float = -0.01,
+        reward_pos: float = 1.0,
     ) -> None:
         """Initializes the PredictorEnv object."""
         logger.info("Init env: " + reward_function)
@@ -122,6 +126,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
         spaces = {
             "num_qubits": Discrete(128),
             "depth": Discrete(1000000),
+            "gate_count": Discrete(1000000),
             "program_communication": Box(low=0, high=1, shape=(1,), dtype=np.float32),
             "critical_depth": Box(low=0, high=1, shape=(1,), dtype=np.float32),
             "entanglement_ratio": Box(low=0, high=1, shape=(1,), dtype=np.float32),
@@ -130,6 +135,13 @@ class PredictorEnv(Env):  # type: ignore[misc]
         }
         self.observation_space = Dict(spaces)
         self.filename = ""
+        self.action_effectiveness = {
+            self.action_set[i]["name"]: {"changed": 0, "unchanged": 0}
+            for i in self.action_set
+        }
+        self.reward_neg = reward_neg,
+        self.reward_pos = reward_pos,
+
 
     def step(self, action: int) -> tuple[dict[str, Any], float, bool, bool, dict[Any, Any]]:
         """Executes the given action and returns the new state, the reward, whether the episode is done, whether the episode is truncated and additional information."""
@@ -137,6 +149,14 @@ class PredictorEnv(Env):  # type: ignore[misc]
         logger.info(f"🛠️  [Step {self.num_steps}] Applying action: {action_name}")
         self.used_actions.append(str(action_name))
 
+        prev_obs = rl.helper.create_feature_dict(self.state)
+        prev_fidelity = None
+
+        if self.action_terminate_index in self.determine_valid_actions_for_state():
+            try:
+                prev_fidelity = reward.expected_fidelity(self.state, self.device)
+            except Exception:
+                prev_fidelity = None
         start_time = time.time()
         altered_qc = self.apply_action(action)
         elapsed = time.time() - start_time
@@ -169,7 +189,31 @@ class PredictorEnv(Env):  # type: ignore[misc]
             reward_val = self.calculate_reward()
             done = True
         else:
+
+            new_obs = rl.helper.create_feature_dict(self.state)
+            if self.features_changed(prev_obs, new_obs):
+                self.action_effectiveness[action_name]["changed"] += 1
+                reward_val = 0
+                if self.action_terminate_index in self.valid_actions:
+                    fidelity_reward = 0
+                    try:
+                        new_fidelity = reward.expected_fidelity(self.state, self.device)
+                        if prev_fidelity is not None and new_fidelity > prev_fidelity:
+                            logger.info(f"Fidelity gain of {new_fidelity - prev_fidelity}")
+                            # Reward proportional to improvement, or just self.reward_positive_fidelity
+                            fidelity_reward = self.reward_pos * (new_fidelity - prev_fidelity)
+                    except Exception:
+                        fidelity_reward = 0
+                    reward_val += fidelity_reward
+            else:
+                self.action_effectiveness[action_name]["unchanged"] += 1
+                logger.info("Penalizing ineffective action")
+                reward_val = self.reward_neg
+
             reward_val = 0
+
+            
+
             done = False
 
         # in case the Qiskit.QuantumCircuit has unitary or u gates in it, decompose them (because otherwise qiskit will throw an error when applying the BasisTranslator
@@ -278,6 +322,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         self.num_qubits_uncompiled_circuit = self.state.num_qubits
         self.has_parameterized_gates = len(self.state.parameters) > 0
+
+
         return rl.helper.create_feature_dict(self.state), {}
 
     def action_masks(self) -> list[bool]:
@@ -312,10 +358,12 @@ class PredictorEnv(Env):  # type: ignore[misc]
                 return self.state
             if action_index in self.actions_opt_indices:
                 transpile_pass = action["transpile_pass"]
+                if callable(transpile_pass) and action["name"] not in {"QiskitO3", "BQSKitO2"}:
+                    transpile_pass = transpile_pass(self.device)
             else:
                 transpile_pass = action["transpile_pass"](self.device)
 
-            if action["origin"] == "qiskit":
+            if action["origin"] in {"qiskit", "qiskit_ai"}:
                 try:
                     if action["name"] == "QiskitO3":
                         pm = PassManager()
@@ -329,7 +377,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
                             ),
                         )
                     else:
-                        pm = PassManager(transpile_pass)
+                        pm = PassManager(transpile_pass)  
                     altered_qc = pm.run(self.state)
                 except Exception:
                     logger.exception(
@@ -450,3 +498,20 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         # No layout applied yet
         return self.actions_mapping_indices + self.actions_layout_indices + self.actions_opt_indices
+    
+    def export_action_effectiveness(self, path="action_effectiveness.json"):
+        """Export the success/failure count of actions to a JSON file."""
+        with open(path, "w") as f:
+            json.dump(self.action_effectiveness, f, indent=4)
+        logger.info(f"📊 Saved action effectiveness to {path}")
+    
+    def features_changed(self, prev: dict, curr: dict) -> bool:
+        for key in prev:
+            if isinstance(prev[key], np.ndarray):
+                if not np.allclose(prev[key], curr[key]):
+                    return True
+            else:
+                if prev[key] != curr[key]:
+                    return True
+        return False
+
