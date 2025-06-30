@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from pathlib import Path
 from collections import deque
 from copy import deepcopy
+import numpy as np
 
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.policies import MaskableMultiInputActorCriticPolicy
@@ -270,12 +271,190 @@ class ActionEffectivenessCallback(BaseCallback):
             logger.info(f"[ActionStats] 💾 Saving to {save_path}")
         self.env.export_action_effectiveness(str(save_path))
 
+    class ActionEffectivenessEarlyStoppingCallback(BaseCallback):
+        def __init__(
+            self,
+            env,
+            save_dir: str = "./action_stats",
+            verbose: int = 0,
+            check_freq: int = 50,
+            reward_patience: int = 5,
+            reward_delta: float = 1e-4,
+            reward_threshold: float = None,
+        ):
+            super().__init__(verbose)
+            self.env = env
+            self.save_dir = Path(save_dir)
+            self.save_dir.mkdir(parents=True, exist_ok=True)
+            self.rollout_count = 0
+            self.verbose = verbose
+
+            # Early stopping config
+            self.check_freq = check_freq
+            self.reward_patience = reward_patience
+            self.reward_delta = reward_delta
+            self.reward_threshold = reward_threshold
+            self.best_mean_reward = -np.inf
+            self.no_improve_count = 0
+            self.stop_training_now = False
+            self.recent_rewards = []
+
+        def _on_rollout_end(self) -> None:
+            self.rollout_count += 1
+
+            # Save action effectiveness log
+            filename = f"action_effectiveness_rollout_{self.rollout_count:05d}.json"
+            save_path = self.save_dir / filename
+            if self.verbose:
+                logger.info(f"[ActionStats] 💾 Saving to {save_path}")
+            self.env.export_action_effectiveness(str(save_path))
+
+            # Early stopping logic
+            # Collect mean reward for this rollout, if available
+            infos = self.locals.get("infos", [])
+            episode_rewards = [info["episode"]["r"] for info in infos if "episode" in info]
+            if episode_rewards:
+                mean_reward = np.mean(episode_rewards)
+                self.recent_rewards.append(mean_reward)
+            else:
+                # If no reward info, do nothing
+                return
+
+            if self.rollout_count % self.check_freq == 0:
+                avg_reward = np.mean(self.recent_rewards[-self.check_freq:])
+
+                if self.verbose:
+                    logger.info(f"[ActionStats] 📊 Recent avg reward: {avg_reward:.4f}")
+
+                # Check improvement
+                if avg_reward > self.best_mean_reward + self.reward_delta:
+                    self.best_mean_reward = avg_reward
+                    self.no_improve_count = 0
+                    if self.verbose:
+                        logger.info(f"[ActionStats] 🆕 Improved avg reward: {avg_reward:.4f}")
+                else:
+                    self.no_improve_count += 1
+                    if self.verbose:
+                        logger.info(f"[ActionStats] 😴 No improvement ({self.no_improve_count}/{self.reward_patience})")
+
+                # Early stopping conditions
+                if (self.reward_threshold is not None) and (avg_reward >= self.reward_threshold):
+                    logger.info(f"[ActionStats] 🎯 Early stopping: reward threshold {self.reward_threshold} reached!")
+                    self.stop_training_now = True
+                    return False  # This tells SB3 to stop
+                if self.no_improve_count >= self.reward_patience:
+                    logger.info(f"[ActionStats] ⏹️ Early stopping: no improvement for {self.reward_patience} checks!")
+                    self.stop_training_now = True
+                    return False
+
+        def _on_training_end(self):
+            if self.verbose:
+                logger.info(f"[ActionStats] Training ended. Best mean reward: {self.best_mean_reward:.4f}")
+
+        def _on_step(self) -> bool:
+            if self.stop_training_now:
+                return False
+            return True
+
+class ActionEffectivenessEarlyStoppingCallback(BaseCallback):
+    def __init__(
+        self,
+        env,
+        save_dir: str = "./action_stats",
+        verbose: int = 0,
+        reward_patience: int = 5,
+        reward_delta: float = 1e-4,
+        reward_threshold: float = None,
+    ):
+        super().__init__(verbose)
+        self.env = env
+        self.save_dir = Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.rollout_count = 0
+        self.verbose = verbose
+
+        # Early stopping config
+        self.reward_patience = reward_patience
+        self.reward_delta = reward_delta
+        self.reward_threshold = reward_threshold
+        self.best_mean_reward = -np.inf
+        self.no_improve_count = 0
+        self.stop_training_now = False
+        self.episode_rewards = []  # rewards of episodes finished during current rollout
+
+    def _on_step(self) -> bool:
+        # Collect episode rewards as they finish
+        if self.stop_training_now:
+            return False
+        if self.locals.get("infos"):
+            for info in self.locals["infos"]:
+                if "episode" in info:
+                    # This is the total reward for an episode that ended at this step
+                    self.episode_rewards.append(info["episode"]["r"])
+        return True
+
+    def _on_rollout_end(self) -> None:
+        self.rollout_count += 1
+
+        # Save action effectiveness log
+        filename = f"action_effectiveness_rollout_{self.rollout_count:05d}.json"
+        save_path = self.save_dir / filename
+        if self.verbose:
+            logger.info(f"[ActionStats] 💾 Saving to {save_path}")
+        self.env.export_action_effectiveness(str(save_path))
+
+        # Early stopping logic
+        if not self.episode_rewards:  # No episodes finished this rollout
+            if self.verbose:
+                logger.info(f"[ActionStats] ⚠️ No finished episodes in this rollout.")
+            return
+
+        avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
+        if self.verbose:
+            logger.info(f"[ActionStats] 📊 Mean episode reward (this rollout): {avg_reward:.4f}")
+
+        # Check improvement
+        if avg_reward > self.best_mean_reward + self.reward_delta:
+            self.best_mean_reward = avg_reward
+            self.no_improve_count = 0
+            if self.verbose:
+                logger.info(f"[ActionStats] 🆕 Improved avg reward: {avg_reward:.4f}")
+        else:
+            self.no_improve_count += 1
+            if self.verbose:
+                logger.info(f"[ActionStats] 😴 No improvement ({self.no_improve_count}/{self.reward_patience})")
+
+        # Early stopping conditions
+        if (self.reward_threshold is not None) and (avg_reward >= self.reward_threshold):
+            logger.info(f"[ActionStats] 🎯 Early stopping: reward threshold {self.reward_threshold} reached!")
+            self.stop_training_now = True
+        if self.no_improve_count >= self.reward_patience:
+            logger.info(f"[ActionStats] ⏹️ Early stopping: no improvement for {self.reward_patience} rollouts!")
+            self.stop_training_now = True
+
+        # Reset episode rewards for the next rollout
+        self.episode_rewards = []
+
+    def _on_training_end(self):
+        if self.verbose:
+            logger.info(f"[ActionStats] Training ended. Best mean reward: {self.best_mean_reward:.4f}")
+
+    def _on_step(self) -> bool:
+        if self.stop_training_now:
+            return False
+        if self.locals.get("infos"):
+            for info in self.locals["infos"]:
+                if "episode" in info:
+                    self.episode_rewards.append(info["episode"]["r"])
+        return True
+    
+
 class Predictor:
     """The Predictor class is used to train a reinforcement learning model for a given figure of merit and device such that it acts as a compiler."""
 
     def __init__(
         self, figure_of_merit: reward.figure_of_merit, device_name: str, logger_level: int = logging.INFO, 
-        reward_neg: float = -0.01, 
+        reward_neg: float = -0.005, 
         reward_pos: float = 1.0,
         use_curriculum: bool = False,
         curriculum_df_path: str = "curriculum_metrics_optuna.csv"
@@ -348,7 +527,7 @@ class Predictor:
 
         step_count = 0
         max_steps = 200
-        recent_actions = deque(maxlen=5)
+        recent_actions = deque(maxlen=8)
         blocked_actions = set()
 
         unstable_actions = {"AIRouting", "AICliffordSynthesis", "AILinearFunctionSynthesis", "AIPermutationSynthesis"}
@@ -376,7 +555,7 @@ class Predictor:
                     return False
                 return lst[-2*k:-k] == lst[-k:]
             
-            for k in range(1, max_cycle_length+1):
+            for k in range(2, max_cycle_length+1):
                 if is_cycle(list(recent_actions), k):
                     print(f"Avoiding {k}-cycle infinite loop pattern")
                     for cyc_action in set(list(recent_actions)[-k:]):
@@ -497,8 +676,15 @@ class Predictor:
 
         os.makedirs(f"./checkpoints/{save_name}", exist_ok=True)
 
-        #callback = None
-        callback = ActionEffectivenessCallback(env=self.env,save_dir=f"./checkpoints/{save_name}/action_logs", verbose=1)
+        callback = None
+        #callback = ActionEffectivenessCallback(env=self.env,save_dir=f"./checkpoints/{save_name}/action_logs", verbose=1)
+        callback = ActionEffectivenessEarlyStoppingCallback(
+            env=self.env,
+            save_dir=f"./checkpoints/{save_name}/action_logs",          
+            reward_patience=10,       
+            reward_delta=1e-4,       
+            verbose=1
+        )
         if curriculum:
             #callback = CurriculumProgressionCallback(env=self.env, threshold=0.3, check_freq=50, save_dir=rl.helper.get_path_trained_model() / save_name)
             callback = SaturationCurriculumCallback(env=self.env, check_freq=50, save_dir=rl.helper.get_path_trained_model() / save_name, save_best_checkpoint=True)

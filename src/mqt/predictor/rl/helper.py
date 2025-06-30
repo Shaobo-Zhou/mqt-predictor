@@ -29,6 +29,7 @@ from qiskit.transpiler.passes import (
     BasicSwap,
     BasisTranslator,
     Collect2qBlocks,
+    CollectCliffords,
     CommutativeCancellation,
     CommutativeInverseCancellation,
     ConsolidateBlocks,
@@ -149,8 +150,12 @@ def get_actions_opt() -> list[dict[str, Any]]:
         },
         {
             "name": "OptimizeCliffords",
-            "transpile_pass": [OptimizeCliffords()],
+            "transpile_pass": [CollectCliffords(), OptimizeCliffords()],
             "origin": "qiskit",
+        },
+        {   "name": "AIClifford", 
+            "transpile_pass": [CollectCliffords(), OptimizeCliffords(), AICliffordSynthesis()],
+            "origin": "qiskit_ai"
         },
         {
             "name": "Opt2qBlocks",
@@ -401,8 +406,6 @@ def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> t
         assert len(file_list) > 0 """
 
     base_path = get_path_training_circuits() / "training_data_compilation"
-    #base_path = get_path_training_circuits() / "filtered_and_clustered_circuits" / "train" 
-    #base_path = get_path_training_circuits() / "filtered_mqt_bench_training_30" / "train" 
     file_list = list(base_path.rglob("*.qasm"))
 
     found_suitable_qc = False
@@ -421,6 +424,15 @@ def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> t
     return qc, str(file_list[random_index])
 
 
+def dict_to_featurevector(gate_dict: dict[str, int]) -> dict[str, int]:
+    """Calculates and returns the feature vector of a given quantum circuit gate dictionary."""
+    res_dct = dict.fromkeys(get_openqasm_gates(), 0)
+    for key, val in dict(gate_dict).items():
+        if key in res_dct:
+            res_dct[key] = val
+
+    return res_dct
+
 def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float64]]:
     """Creates a feature dictionary for a given quantum circuit.
 
@@ -430,11 +442,18 @@ def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float6
     Returns:
         The feature dictionary for the given quantum circuit.
     """
-    feature_dict = {
-        "num_qubits": qc.num_qubits,
-        "gate_count": qc.size(),
-        "depth": qc.depth(),
-    }
+
+    ops_list = qc.count_ops()
+    ops_list_dict = dict_to_featurevector(ops_list)
+
+    feature_dict = {}
+    for key in ops_list_dict:
+        feature_dict[key] = float(ops_list_dict[key])
+    
+    feature_dict["num_qubits"] = float(qc.num_qubits)
+    feature_dict["depth"] = float(qc.depth())
+    feature_dict["gate_count"] = float(qc.size())
+
 
     supermarq_features = calc_supermarq_features(qc)
     # for all dict values, put them in a list each

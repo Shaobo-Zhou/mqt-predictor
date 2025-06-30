@@ -139,8 +139,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
             self.action_set[i]["name"]: {"changed": 0, "unchanged": 0}
             for i in self.action_set
         }
-        self.reward_neg = reward_neg,
-        self.reward_pos = reward_pos,
+        self.reward_neg = reward_neg
+        self.reward_pos = reward_pos
 
 
     def step(self, action: int) -> tuple[dict[str, Any], float, bool, bool, dict[Any, Any]]:
@@ -162,10 +162,6 @@ class PredictorEnv(Env):  # type: ignore[misc]
         elapsed = time.time() - start_time
 
         logger.info(f"⏱️  [Step {self.num_steps}] Action '{action_name}' took {elapsed:.2f} seconds")
-        # Store the timing
-        # if action_name not in self.action_timings:
-        #     self.action_timings[action_name] = []
-        # self.action_timings[action_name].append(elapsed)
 
         if not altered_qc:
             gc.collect()
@@ -209,10 +205,6 @@ class PredictorEnv(Env):  # type: ignore[misc]
                 self.action_effectiveness[action_name]["unchanged"] += 1
                 logger.info("Penalizing ineffective action")
                 reward_val = self.reward_neg
-
-            reward_val = 0
-
-            
 
             done = False
 
@@ -379,6 +371,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     else:
                         pm = PassManager(transpile_pass)  
                     altered_qc = pm.run(self.state)
+                    if action["name"] in ["OptimizeCliffords", "AIClifford"]:
+                        altered_qc = altered_qc.decompose(gates_to_decompose="clifford")
                 except Exception:
                     logger.exception(
                         "Error in executing Qiskit transpile pass for {action} at step {i} for {filename}".format(
@@ -428,7 +422,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     qbs = tket_qc.qubits
                     qubit_map = {qbs[i]: Qubit("q", i) for i in range(len(qbs))}
                     tket_qc.rename_units(qubit_map)  # type: ignore[arg-type]
-                    altered_qc = tk_to_qiskit(tket_qc)
+                    #altered_qc = tk_to_qiskit(tket_qc)
+                    altered_qc = tk_to_qiskit(tket_qc, replace_implicit_swaps=True)
                     if action_index in self.actions_routing_indices:
                         assert self.layout is not None
                         self.layout.final_layout = rl.helper.final_layout_pytket_to_qiskit(tket_qc, altered_qc)
