@@ -9,6 +9,7 @@ if __name__ == "__main__":
     parser.add_argument("--device_name", type=str, default="ibm_washington", help="Target quantum device")
     parser.add_argument("--model_name", type=str, default="rl", help="Name prefix for the model")
     parser.add_argument("--save_name", type=str, default="rl", help="Name predix for saving")
+    parser.add_argument("--resume_path", type=str, default="./checkpoints/checkpoint.pt", help="Name predix for loading")
     parser.add_argument("--verbose", type=int, default=2, help="Verbosity level")
     parser.add_argument("--test", action="store_true", help="Run in test mode")
 
@@ -25,5 +26,6 @@ if __name__ == "__main__":
         verbose=args.verbose,
         test=args.test,
         trained=args.trained,
-        save_name=args.save_name
+        save_name=args.save_name,
+        resume_model_path=args.resume_path
     )

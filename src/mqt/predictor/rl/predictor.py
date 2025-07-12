@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import csv
 import pandas as pd
 from typing import TYPE_CHECKING
 from pathlib import Path
@@ -28,24 +29,6 @@ logger = logging.getLogger("mqt-predictor")
 logger.propagate = False
 PATH_LENGTH = 260
 
-
-""" class OffsetCheckpointCallback(BaseCallback):
-    def __init__(self, save_freq, save_path, name_prefix, offset=0, verbose=0):
-        super().__init__(verbose)
-        self.save_freq = save_freq
-        self.save_path = save_path
-        self.name_prefix = name_prefix
-        self.offset = offset
-
-    def _on_step(self) -> bool:
-        total_steps = self.num_timesteps + self.offset
-        if total_steps % self.save_freq == 0:
-            path = f"{self.save_path}/{self.name_prefix}_{total_steps}_steps.zip"
-            #self.model.save(path)
-            if self.verbose > 0:
-                print(f"✅ Saved checkpoint: {path}")
-        return True
- """
 class CurriculumProgressionCallback(BaseCallback):
     def __init__(
         self,
@@ -378,19 +361,23 @@ class ActionEffectivenessEarlyStoppingCallback(BaseCallback):
         self.reward_delta = reward_delta
         self.reward_threshold = reward_threshold
         self.best_mean_reward = -np.inf
+        self.best_mean_final_step = -np.inf
         self.no_improve_count = 0
         self.stop_training_now = False
-        self.episode_rewards = []  # rewards of episodes finished during current rollout
+        self.episode_rewards = []  
+        self.final_step_rewards = []
 
     def _on_step(self) -> bool:
         # Collect episode rewards as they finish
         if self.stop_training_now:
             return False
-        if self.locals.get("infos"):
-            for info in self.locals["infos"]:
+        infos = self.locals.get("infos")
+        rewards = self.locals.get("rewards")
+        if infos and rewards is not None:
+            for env_idx, info in enumerate(infos):
                 if "episode" in info:
-                    # This is the total reward for an episode that ended at this step
                     self.episode_rewards.append(info["episode"]["r"])
+                    self.final_step_rewards.append(rewards[env_idx])
         return True
 
     def _on_rollout_end(self) -> None:
@@ -403,50 +390,58 @@ class ActionEffectivenessEarlyStoppingCallback(BaseCallback):
             logger.info(f"[ActionStats] 💾 Saving to {save_path}")
         self.env.export_action_effectiveness(str(save_path))
 
-        # Early stopping logic
-        if not self.episode_rewards:  # No episodes finished this rollout
+        checkpoint_path = self.save_dir / "latest_checkpoint.zip"
+        if hasattr(self, 'model'):
+            self.model.save(str(checkpoint_path))
+            if self.verbose:
+                logger.info(f"[ActionStats] 💾 Checkpoint saved to {checkpoint_path}")
+        else:
+            logger.warning("[ActionStats] No model attached to callback for checkpointing.")
+
+        # Early stopping logic (fidelity/final step only)
+        if not self.final_step_rewards:
             if self.verbose:
                 logger.info(f"[ActionStats] ⚠️ No finished episodes in this rollout.")
             return
 
-        avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
+        mean_final_step = sum(self.final_step_rewards) / len(self.final_step_rewards)
+
         if self.verbose:
-            logger.info(f"[ActionStats] 📊 Mean episode reward (this rollout): {avg_reward:.4f}")
+            avg_reward = sum(self.episode_rewards) / len(self.episode_rewards) if self.episode_rewards else None
+            logger.info(f"[ActionStats] 📊 Mean episode reward (this rollout): {avg_reward:.4f}" if avg_reward is not None else "[ActionStats] 📊 No episode rewards.")
+            logger.info(f"[ActionStats] 🏁 Mean final step reward (fidelity, this rollout): {mean_final_step:.6f}")
 
-        # Check improvement
-        if avg_reward > self.best_mean_reward + self.reward_delta:
-            self.best_mean_reward = avg_reward
-            self.no_improve_count = 0
+        # --- Early stopping on final step reward (fidelity) only ---
+        if mean_final_step > self.best_mean_final_step + self.reward_delta:
+            self.best_mean_final_step = mean_final_step
+            self.no_improve_count_final_step = 0
             if self.verbose:
-                logger.info(f"[ActionStats] 🆕 Improved avg reward: {avg_reward:.4f}")
+                logger.info(f"[ActionStats] 🆕 Improved mean final step reward: {mean_final_step:.6f}")
         else:
-            self.no_improve_count += 1
+            self.no_improve_count_final_step += 1
             if self.verbose:
-                logger.info(f"[ActionStats] 😴 No improvement ({self.no_improve_count}/{self.reward_patience})")
-
-        # Early stopping conditions
-        if (self.reward_threshold is not None) and (avg_reward >= self.reward_threshold):
-            logger.info(f"[ActionStats] 🎯 Early stopping: reward threshold {self.reward_threshold} reached!")
+                logger.info(f"[ActionStats] 😴 No improvement on final step ({self.no_improve_count_final_step}/{self.reward_patience})")
+        if (self.reward_threshold is not None) and (mean_final_step >= self.reward_threshold):
+            logger.info(f"[ActionStats] 🎯 Early stopping: final step reward threshold {self.reward_threshold} reached!")
             self.stop_training_now = True
-        if self.no_improve_count >= self.reward_patience:
-            logger.info(f"[ActionStats] ⏹️ Early stopping: no improvement for {self.reward_patience} rollouts!")
+        if self.no_improve_count_final_step >= self.reward_patience:
+            logger.info(f"[ActionStats] ⏹️ Early stopping: no improvement for {self.reward_patience} rollouts (final step)!")
             self.stop_training_now = True
 
         # Reset episode rewards for the next rollout
         self.episode_rewards = []
+        self.final_step_rewards = []
 
     def _on_training_end(self):
+        csv_path = self.save_dir / "final_step_rewards.csv"
+        with open(csv_path, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["final_step_reward"])
+            for r in self.final_step_rewards:
+                writer.writerow([r])
         if self.verbose:
             logger.info(f"[ActionStats] Training ended. Best mean reward: {self.best_mean_reward:.4f}")
 
-    def _on_step(self) -> bool:
-        if self.stop_training_now:
-            return False
-        if self.locals.get("infos"):
-            for info in self.locals["infos"]:
-                if "episode" in info:
-                    self.episode_rewards.append(info["episode"]["r"])
-        return True
     
 
 class Predictor:
@@ -515,6 +510,7 @@ class Predictor:
         qc: QuantumCircuit,
         file_name: str,
     ) -> tuple[QuantumCircuit, float, list[str]]:
+        
         folder = rl.helper.get_path_trained_model()
         model_path = folder / file_name
         trained_rl_model = rl.helper.load_model(str(model_path))
@@ -577,6 +573,7 @@ class Predictor:
 
         msg = "Error occurred during compilation."
         raise RuntimeError(msg)
+    
     """def compile_as_predicted(
         self,
         qc: QuantumCircuit,

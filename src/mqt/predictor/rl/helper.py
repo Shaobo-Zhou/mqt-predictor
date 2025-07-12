@@ -22,12 +22,13 @@ from pytket.passes import (
 from pytket.placement import place_with_map
 from qiskit import QuantumCircuit
 from qiskit.circuit.equivalence_library import StandardEquivalenceLibrary
-from qiskit.circuit.library import XGate, ZGate
+from qiskit.circuit.library import XGate, YGate, ZGate, CXGate, CYGate, CZGate, HGate, TGate, TdgGate, SdgGate, SGate, SwapGate
 from qiskit.transpiler import CouplingMap, Layout, PassManager, TranspileLayout
 from qiskit.transpiler.passes import (
     ApplyLayout,
     BasicSwap,
     BasisTranslator,
+    CheckMap,
     Collect2qBlocks,
     CollectCliffords,
     CommutativeCancellation,
@@ -40,11 +41,13 @@ from qiskit.transpiler.passes import (
     FullAncillaAllocation,
     GatesInBasis,
     InverseCancellation,
+    LookaheadSwap,
     MinimumPoint,
     Optimize1qGatesDecomposition,
     OptimizeCliffords,
     RemoveDiagonalGatesBeforeMeasure,
     SabreLayout,
+    SabreSwap,
     Size,
     TrivialLayout,
     
@@ -54,6 +57,7 @@ from qiskit.transpiler.passes import (
 )
 
 from qiskit_ibm_transpiler.ai.routing import AIRouting
+from qiskit_ibm_transpiler.ai.collection import CollectLinearFunctions, CollectPermutations
 from qiskit_ibm_transpiler.ai.synthesis import (
     AICliffordSynthesis,
     AILinearFunctionSynthesis,
@@ -125,7 +129,7 @@ def get_actions_opt() -> list[dict[str, Any]]:
     return [
         {
             "name": "Optimize1qGatesDecomposition",
-            "transpile_pass": [Optimize1qGatesDecomposition()],
+            "transpile_pass": lambda native_gate: [Optimize1qGatesDecomposition(basis=native_gate)],
             "origin": "qiskit",
         },
         {
@@ -145,7 +149,13 @@ def get_actions_opt() -> list[dict[str, Any]]:
         },
         {
             "name": "InverseCancellation",
-            "transpile_pass": [InverseCancellation([XGate(), ZGate()])],
+            "transpile_pass": [InverseCancellation([
+                XGate(), YGate(), ZGate(),         
+                HGate(),                      
+                CXGate(), CYGate(), CZGate(),    
+                SwapGate(),                   
+                (TGate(), TdgGate()), (SGate(), SdgGate())
+            ])],
             "origin": "qiskit",
         },
         {
@@ -153,15 +163,31 @@ def get_actions_opt() -> list[dict[str, Any]]:
             "transpile_pass": [CollectCliffords(), OptimizeCliffords()],
             "origin": "qiskit",
         },
-        {   "name": "AIClifford", 
-            "transpile_pass": [CollectCliffords(), OptimizeCliffords(), AICliffordSynthesis()],
-            "origin": "qiskit_ai"
-        },
+        # {
+        #     "name": "AIClifford",
+        #     "transpile_pass": lambda coupling_map: [
+        #         CollectCliffords(),
+        #         AICliffordSynthesis(coupling_map=coupling_map)
+        #     ],
+        #     "origin": "qiskit_ai"
+        # },
+        # Very restricted usecase and underperforms AIClifford
+        # {   "name": "AILinearFunction", 
+        #     "transpile_pass": [CollectLinearFunctions(), AILinearFunctionSynthesis()],
+        #     "origin": "qiskit_ai"
+        # },
+
+        # Very restricted usecase
+        # {   "name": "AIPermutation", 
+        #     "transpile_pass": [CollectPermutations(), AIPermutationSynthesis()],
+        #     "origin": "qiskit_ai"
+        # },
         {
             "name": "Opt2qBlocks",
-            "transpile_pass": [Collect2qBlocks(), ConsolidateBlocks()],
+            "transpile_pass": lambda native_gate: [Collect2qBlocks(), ConsolidateBlocks(basis_gates=native_gate)],
             "origin": "qiskit",
         },
+        
         {
             "name": "PeepholeOptimise2Q",
             "transpile_pass": [PeepholeOptimise2Q()],
@@ -182,30 +208,30 @@ def get_actions_opt() -> list[dict[str, Any]]:
             "transpile_pass": [RemoveRedundancies()],
             "origin": "tket",
         },
-        {
-            "name": "QiskitO3",
-            "transpile_pass": lambda native_gate, coupling_map: [
-                Collect2qBlocks(),
-                ConsolidateBlocks(basis_gates=native_gate),
-                UnitarySynthesis(basis_gates=native_gate, coupling_map=coupling_map),
-                Optimize1qGatesDecomposition(basis=native_gate),
-                CommutativeCancellation(basis_gates=native_gate),
-                GatesInBasis(native_gate),
-                ConditionalController(
-                    common.generate_translation_passmanager(
-                        target=None, basis_gates=native_gate, coupling_map=coupling_map
-                    ).to_flow_controller(),
-                    condition=lambda property_set: not property_set["all_gates_in_basis"],
-                ),
-                Depth(recurse=True),
-                FixedPoint("depth"),
-                Size(recurse=True),
-                FixedPoint("size"),
-                MinimumPoint(["depth", "size"], "optimization_loop"),
-            ],
-            "origin": "qiskit",
-            "do_while": lambda property_set: (not property_set["optimization_loop_minimum_point"]),
-        },
+        # {
+        #     "name": "QiskitO3",
+        #     "transpile_pass": lambda native_gate, coupling_map: [
+        #         Collect2qBlocks(),
+        #         ConsolidateBlocks(basis_gates=native_gate),
+        #         UnitarySynthesis(basis_gates=native_gate, coupling_map=coupling_map),
+        #         Optimize1qGatesDecomposition(basis=native_gate),
+        #         CommutativeCancellation(basis_gates=native_gate),
+        #         GatesInBasis(native_gate),
+        #         ConditionalController(
+        #             common.generate_translation_passmanager(
+        #                 target=None, basis_gates=native_gate, coupling_map=coupling_map
+        #             ).to_flow_controller(),
+        #             condition=lambda property_set: not property_set["all_gates_in_basis"],
+        #         ),
+        #         Depth(recurse=True),
+        #         FixedPoint("depth"),
+        #         Size(recurse=True),
+        #         FixedPoint("size"),
+        #         MinimumPoint(["depth", "size"], "optimization_loop"),
+        #     ],
+        #     "origin": "qiskit",
+        #     "do_while": lambda property_set: (not property_set["optimization_loop_minimum_point"]),
+        # },
         # {
         #     "name": "BQSKitO2",
         #     "transpile_pass": lambda circuit: bqskit_compile(
@@ -242,7 +268,7 @@ def get_actions_final_optimization() -> list[dict[str, Any]]:
         {
             "name": "VF2PostLayout",
             "transpile_pass": lambda device: VF2PostLayout(
-                target=get_ibm_backend_properties_by_device_name(device.name),
+                target=get_ibm_backend_properties_by_device_name(device.name), time_limit= 10
             ),
             "origin": "qiskit",
         }
@@ -291,6 +317,20 @@ def get_actions_layout() -> list[dict[str, Any]]:
             ],
             "origin": "qiskit",
         },
+
+        {
+            "name": "SabreLayout",
+            "transpile_pass": lambda device: [
+                SabreLayout(
+                    coupling_map=CouplingMap(device.coupling_map),
+                    skip_routing=True,        
+                ),
+                FullAncillaAllocation(coupling_map=CouplingMap(device.coupling_map)),
+                EnlargeWithAncilla(),
+                ApplyLayout(),
+            ],
+            "origin": "qiskit",
+        },
     ]
 
 
@@ -302,6 +342,20 @@ def get_actions_routing() -> list[dict[str, Any]]:
             "transpile_pass": lambda device: [BasicSwap(coupling_map=CouplingMap(device.coupling_map))],
             "origin": "qiskit",
         },
+
+        # {
+        #     "name": "LookaheadSwap",
+        #     "transpile_pass": lambda device: [LookaheadSwap(coupling_map=CouplingMap(device.coupling_map))],
+        #     "origin": "qiskit",
+        # }
+
+        {
+            "name": "SabreSwap",
+            "transpile_pass": lambda device: [SabreSwap(coupling_map=CouplingMap(device.coupling_map), 
+                                                        heuristic="decay")],
+            "origin": "qiskit",
+        },
+
         {
             "name": "RoutingPass",
             "transpile_pass": lambda device: [
@@ -310,16 +364,17 @@ def get_actions_routing() -> list[dict[str, Any]]:
             ],
             "origin": "tket",
         },
-        # {
-        #     "name": "AIRouting",
-        #     "transpile_pass": lambda device: [AIRouting(
-        #         coupling_map=device.coupling_map,
-        #         optimization_level=2,
-        #         layout_mode="optimize",
-        #         local_mode=True
-        #     )],
-        #     "origin": "qiskit_ai",
-        # },
+        {
+            "name": "AIRouting",
+            "transpile_pass": lambda device: [AIRouting(
+                coupling_map=device.coupling_map,
+                optimization_level=2,
+                layout_mode="optimize",
+                local_mode=True
+            )],
+            "origin": "qiskit_ai",
+        },
+
     ]
 
 
@@ -405,10 +460,11 @@ def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> t
         file_list = list(get_path_training_circuits().glob("*.qasm"))
         assert len(file_list) > 0 """
 
+    #base_path = get_path_training_circuits() / "new_indep_circuits" /"train"
     base_path = get_path_training_circuits() / "training_data_compilation"
     file_list = list(base_path.rglob("*.qasm"))
 
-    found_suitable_qc = False
+    """ found_suitable_qc = False
     while not found_suitable_qc:
         random_index = rng.integers(len(file_list))
         num_qubits = int(str(file_list[random_index]).split("_")[-1].split(".")[0])
@@ -419,10 +475,67 @@ def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> t
     try:
         qc = QuantumCircuit.from_qasm_file(str(file_list[random_index]))
     except Exception:
-        raise RuntimeError("Could not read QuantumCircuit from: " + str(file_list[random_index])) from None
+        raise RuntimeError("Could not read QuantumCircuit from: " + str(file_list[random_index])) from None 
+    return qc, str(file_list[random_index])"""
+    
+    rng = rng or np.random.default_rng()
+    while True:
+        file_path = rng.choice(file_list)
+        try:
+            qc = QuantumCircuit.from_qasm_file(str(file_path))
+            return qc, str(file_path)
+        except Exception:
+            print(f"Failed to load {file_path}, retrying...")
 
-    return qc, str(file_list[random_index])
+    
 
+def get_openqasm_gates() -> list[str]:
+    """Returns a list of all quantum gates within the openQASM 2.0 standard header."""
+    # according to https://github.com/Qiskit/qiskit-terra/blob/main/qiskit/qasm/libs/qelib1.inc
+    return [
+        # "u3",
+        # "u2",
+        # "u1",
+        "cx",
+        #"id",
+        #"u0",
+        "u",
+        "p",
+        "x",
+        "y",
+        "z",
+        "h",
+        "s",
+        "sdg",
+        "t",
+        "tdg",
+        "rx",
+        "ry",
+        "rz",
+        "sx",
+        "sxdg",
+        "cz",
+        "cy",
+        "swap",
+        "ch",
+        "ccx",
+        "cswap",
+        "crx",
+        "cry",
+        "crz",
+        "cu1",
+        "cp",
+        #"cu3",
+        "csx",
+        "cu",
+        "rxx",
+        "rzz",
+        "rccx",
+        # "rc3x",
+        # "c3x",
+        # "c3sqrtx",
+        # "c4x",
+    ]
 
 def dict_to_featurevector(gate_dict: dict[str, int]) -> dict[str, int]:
     """Calculates and returns the feature vector of a given quantum circuit gate dictionary."""
@@ -433,7 +546,7 @@ def dict_to_featurevector(gate_dict: dict[str, int]) -> dict[str, int]:
 
     return res_dct
 
-def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float64]]:
+def create_feature_dict(qc: QuantumCircuit, basis_gates: list[str], coupling_map) -> dict[str, int | NDArray[np.float64]]:
     """Creates a feature dictionary for a given quantum circuit.
 
     Arguments:
@@ -443,6 +556,7 @@ def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float6
         The feature dictionary for the given quantum circuit.
     """
 
+    gates = get_openqasm_gates()
     ops_list = qc.count_ops()
     ops_list_dict = dict_to_featurevector(ops_list)
 
@@ -450,11 +564,14 @@ def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float6
     for key in ops_list_dict:
         feature_dict[key] = float(ops_list_dict[key])
     
+    feature_dict["native_mask"] = np.array([1 if g in basis_gates else 0 for g in gates])
+    
+    feature_dict["measure"] = float(ops_list.get("measure", 0))
     feature_dict["num_qubits"] = float(qc.num_qubits)
     feature_dict["depth"] = float(qc.depth())
-    feature_dict["gate_count"] = float(qc.size())
+    #feature_dict["gate_count"] = float(qc.size())
 
-
+    
     supermarq_features = calc_supermarq_features(qc)
     # for all dict values, put them in a list each
     feature_dict["program_communication"] = np.array([supermarq_features.program_communication], dtype=np.float32)
@@ -463,30 +580,74 @@ def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float6
     feature_dict["parallelism"] = np.array([supermarq_features.parallelism], dtype=np.float32)
     feature_dict["liveness"] = np.array([supermarq_features.liveness], dtype=np.float32)
     
-    # # Graph-based metrics
-    # G = nx.Graph()
-    # for gate in qc.data:
-    #     if len(gate.qubits) == 2:
-    #         q0 = qc.qubits.index(gate.qubits[0])
-    #         q1 = qc.qubits.index(gate.qubits[1])
-    #         if G.has_edge(q0, q1):
-    #             G[q0][q1]["weight"] += 1
-    #         else:
-    #             G.add_edge(q0, q1, weight=1)
+    
+    check_nat_gates = GatesInBasis(basis_gates=basis_gates)
+    check_nat_gates(qc)
+    only_nat_gates = check_nat_gates.property_set["all_gates_in_basis"]
 
-    # if len(G.nodes) > 1 and nx.is_connected(G):
-    #     degrees = dict(G.degree())
-    #     weights = [attr["weight"] for _, _, attr in G.edges(data=True)]
+    check_mapping = CheckMap(coupling_map=CouplingMap(coupling_map))
+    check_mapping(qc)
+    mapped = check_mapping.property_set["is_swap_mapped"]
 
-    #     feature_dict["avg_hopcount"] = nx.average_shortest_path_length(G)
-    #     feature_dict["max_degree"] = max(degrees.values())
-    #     feature_dict["min_degree"] = min(degrees.values())
-    #     feature_dict["adj_std"] = float(np.std(weights)) if weights else 0.0
-    # else:
-    #     feature_dict["avg_hopcount"] = -1.0
-    #     feature_dict["max_degree"] = -1
-    #     feature_dict["min_degree"] = -1
-    #     feature_dict["adj_std"] = -1.0
+    feature_dict["only_nat_gates"] = int(only_nat_gates)
+    feature_dict["mapped"] = int(mapped)
+    # Graph-based metrics
+    """ G = nx.Graph()
+    for gate in qc.data:
+        if len(gate.qubits) == 2:
+            q0 = qc.qubits.index(gate.qubits[0])
+            q1 = qc.qubits.index(gate.qubits[1])
+            if G.has_edge(q0, q1):
+                G[q0][q1]["weight"] += 1
+            else:
+                G.add_edge(q0, q1, weight=1)
+
+    if len(G.nodes) > 1 and nx.is_connected(G):
+        degrees = dict(G.degree())
+
+        feature_dict["avg_hopcount"] = np.array([nx.average_shortest_path_length(G)], dtype=np.float32)
+        feature_dict["max_degree"] = max(degrees.values())
+        feature_dict["min_degree"] = min(degrees.values())
+        #feature_dict["adj_std"] = float(np.std(weights)) if weights else 0.0
+    else:
+        feature_dict["avg_hopcount"] = np.array([-1.0], dtype=np.float32)
+        feature_dict["max_degree"] = 0
+        feature_dict["min_degree"] = 0 """
+        #feature_dict["adj_std"] = -1.0 
+
+    assert 0 <= feature_dict["num_qubits"] < 128, f'num_qubits {feature_dict["num_qubits"]} out of bounds'
+
+    # depth (Discrete(1_000_000))
+    assert 0 <= feature_dict["depth"] < 100_000, f'depth {feature_dict["depth"]} out of bounds'
+
+    # gate_count (Discrete(1_000_000))
+    #assert 0 <= feature_dict["gate_count"] < 1_000_00, f'gate_count {feature_dict["gate_count"]} out of bounds'
+
+    # Each openqasm gate in ops_list_dict (Discrete(100_000))
+    for gate in ops_list_dict:
+        if gate in ['rz', 'sx', 'x', 'cx', 'y', 'z', 'h', 'swap','s', 'sdg', 'u']:
+            assert 0 <= feature_dict[gate] < 120_000, f'{gate} count {feature_dict[gate]} out of bounds'
+        else:
+            assert 0 <= feature_dict[gate] < 6_000, f'{gate} count {feature_dict[gate]} out of bounds'
+
+
+
+    # measure (Discrete(10_000))
+    assert 0 <= feature_dict["measure"] < 128, f'measure {feature_dict["measure"]} out of bounds'
+
+    """ # avg_hopcount (Box(-1, 128))
+    assert -1.0 <= feature_dict["avg_hopcount"] <= 128, f'avg_hopcount {feature_dict["avg_hopcount"]} out of bounds'
+
+    # max_degree (Discrete(128))
+    assert 0 <= feature_dict["max_degree"] < 128, f'max_degree {feature_dict["max_degree"]} out of bounds'
+
+    # min_degree (Discrete(128))
+    assert 0 <= feature_dict["min_degree"] < 128, f'min_degree {feature_dict["min_degree"]} out of bounds' """
+
+    # program_communication, critical_depth, entanglement_ratio, parallelism, liveness (Box(0,1))
+    for field in ["program_communication", "critical_depth", "entanglement_ratio", "parallelism", "liveness"]:
+        val = feature_dict[field][0]
+        assert 0.0 <= val <= 1.0, f'{field} value {val} out of bounds'
 
     return feature_dict
 
