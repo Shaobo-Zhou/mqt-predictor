@@ -213,11 +213,11 @@ class PredictorEnv(Env):  # type: ignore[misc]
                         new_fidelity = self.calculate_reward()
                         if prev_fidelity is not None and new_fidelity > prev_fidelity:
                             reward_val = 0
-                            logger.info(f"Fidelity gain of {new_fidelity - prev_fidelity}")
+                            logger.info(f"Fidelity gain of {new_fidelity} - {prev_fidelity} = {new_fidelity - prev_fidelity}")
                             # Reward proportional to improvement, or just self.reward_positive_fidelity
                             fidelity_reward = self.reward_pos * (new_fidelity - prev_fidelity)
                         elif prev_fidelity is not None and new_fidelity < prev_fidelity:
-                            logger.info(f"Fidelity loss of {new_fidelity - prev_fidelity}")
+                            logger.info(f"Fidelity gain of {new_fidelity} - {prev_fidelity} = {new_fidelity - prev_fidelity}")
                             fidelity_reward = self.reward_pos * (new_fidelity - prev_fidelity)
                     except Exception:
                         fidelity_reward = 0
@@ -238,7 +238,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         self.state._layout = self.layout  # noqa: SLF001
         obs = rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map)
-        #print(obs)
+        for key in ["mapped", "only_nat_gates"]:
+            print(f"{key}: {obs[key]}")
         del altered_qc
         gc.collect()
         return obs, reward_val, done, False, {}
@@ -369,32 +370,36 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
     def apply_action(self, action_index: int) -> QuantumCircuit | None:
         """Applies the given action to the current state and returns the altered state."""
+
         if action_index not in self.action_set:
             raise ValueError(f"Action {action_index} not supported.")
 
         action = self.action_set[action_index]
-        altered_qc = None
-        prop = None  # property_set for Qiskit actions
 
         # Terminate action (no modification)
         if action["name"] == "terminate":
             return self.state
 
         try:
+            # ---- QISKIT / QISKIT_AI PATH ----
             if action["origin"] in {"qiskit", "qiskit_ai"}:
-                # --------- QISKIT & QISKIT_AI PATH ---------
-
-                # Remove cregs if AIRouting is in the action name (works for composites too!)
+                # Remove cregs if AIRouting is in the action name (composite or not)
                 if "AIRouting" in action["name"]:
                     self.state = self.remove_cregs(self.state)
 
-                if action.get("stochastic", False):
-                    # Composite/stochastic action: use best-of-N wrapper
-                    altered_qc, prop = rl.helper.best_of_n_passmanager(
-                        action["transpile_pass"], self.device, self.state, n_attempts=10
-                    )
-                else:
-                    # Deterministic actions and special handling for some passes
+                pm = None
+                altered_qc = None
+
+                # ----- Optimization passes -----
+                if action_index in self.actions_opt_indices:
+                    transpile_pass = action["transpile_pass"]
+                    # For most optimization passes, these are simple callables or Passes
+                    if callable(transpile_pass) and action["name"] not in {
+                        "QiskitO3", "Opt2qBlocks", "Optimize1qGatesDecomposition", "BQSKitO2", "AIClifford"
+                    }:
+                        transpile_pass = transpile_pass(self.device)
+
+                    # Special handling for specific optimization passes
                     if action["name"] == "QiskitO3":
                         pm = PassManager()
                         pm.append(
@@ -411,32 +416,27 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     elif action["name"] == "AIClifford":
                         pm = PassManager(action["transpile_pass"](CouplingMap(self.device.coupling_map)))
                     else:
+                        pm = PassManager(transpile_pass)
+                    altered_qc = pm.run(self.state)
+                    # Optimization passes don't update layout!
+
+                # ----- Mapping/Composite actions -----
+                elif action_index in self.actions_mapping_indices:
+                    # Stochastic actions
+                    if action.get("stochastic", False):
+                        altered_qc, prop = rl.helper.best_of_n_passmanager(
+                            action["transpile_pass"], self.device, self.state, n_attempts=10
+                        )
+                    else:
                         transpile_pass = (
                             action["transpile_pass"](self.device)
                             if callable(action["transpile_pass"]) else action["transpile_pass"]
                         )
                         pm = PassManager(transpile_pass)
+                        altered_qc = pm.run(self.state)
+                        prop = pm.property_set
 
-                    altered_qc = pm.run(self.state)
-                    prop = pm.property_set
-
-                # ---------- PROPERTY SET & LAYOUT HANDLING ----------
-                if action_index in (
-                    self.actions_layout_indices
-                    + self.actions_mapping_indices
-                    + self.actions_final_optimization_indices
-                ):
-                    if action["name"] == "VF2PostLayout":
-                        assert prop["VF2PostLayout_stop_reason"] is not None
-                        post_layout = prop["post_layout"]
-                        if post_layout:
-                            altered_qc, _ = rl.helper.postprocess_vf2postlayout(altered_qc, post_layout, self.layout)
-                    elif action["name"] == "VF2Layout":
-                        if prop["VF2Layout_stop_reason"] == VF2LayoutStopReason.SOLUTION_FOUND:
-                            assert prop["layout"]
-                    else:
-                        assert prop["layout"]
-
+                    # Handle layout for composite mapping actions
                     if prop.get("layout"):
                         self.layout = TranspileLayout(
                             initial_layout=prop["layout"],
@@ -446,12 +446,20 @@ class PredictorEnv(Env):  # type: ignore[misc]
                             _input_qubit_count=self.num_qubits_uncompiled_circuit,
                         )
 
-                elif action_index in self.actions_routing_indices:
-                    assert self.layout is not None
-                    self.layout.final_layout = prop.get("final_layout")
+                # ----- Synthesis actions -----
+                elif action_index in self.actions_synthesis_indices:
+                    transpile_pass = action["transpile_pass"]
+                    if callable(transpile_pass):
+                        transpile_pass = transpile_pass(self.device)
+                    pm = PassManager(transpile_pass)
+                    altered_qc = pm.run(self.state)
+                    # Synthesis actions don't update layout!
 
+                else:
+                    raise ValueError(f"Action {action['name']} at {action_index} not handled.")
+
+            # ---- TKET PATH ----
             elif action["origin"] == "tket":
-                # -------------- TKET PATH --------------
                 try:
                     if any(isinstance(gate[0], RCCXGate) for gate in self.state.data):
                         self.state = self.state.decompose()
@@ -466,9 +474,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     qubit_map = {qbs[i]: Qubit("q", i) for i in range(len(qbs))}
                     tket_qc.rename_units(qubit_map)
                     altered_qc = tk_to_qiskit(tket_qc, replace_implicit_swaps=True)
-                    if action_index in self.actions_routing_indices:
-                        assert self.layout is not None
-                        self.layout.final_layout = rl.helper.final_layout_pytket_to_qiskit(tket_qc, altered_qc)
+                    if action_index in self.actions_mapping_indices:
+                        self.layout = rl.helper.final_layout_pytket_to_qiskit(tket_qc, altered_qc)
                 except Exception:
                     logger.exception(
                         f"Error in executing TKET transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
@@ -476,8 +483,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     self.error_occurred = True
                     return None
 
+            # ---- BQSKit PATH ----
             elif action["origin"] == "bqskit":
-                # ------------- BQSKit PATH --------------
                 try:
                     bqskit_qc = qiskit_to_bqskit(self.state)
                     transpile_pass = (
@@ -490,10 +497,9 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     elif action_index in self.actions_mapping_indices:
                         bqskit_compiled_qc, initial_layout, final_layout = transpile_pass(bqskit_qc)
                         altered_qc = bqskit_to_qiskit(bqskit_compiled_qc)
-                        layout = rl.helper.final_layout_bqskit_to_qiskit(
+                        self.layout = rl.helper.final_layout_bqskit_to_qiskit(
                             initial_layout, final_layout, altered_qc, self.state
                         )
-                        self.layout = layout
                 except Exception:
                     logger.exception(
                         f"Error in executing BQSKit transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
@@ -502,7 +508,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     return None
 
             else:
-                raise ValueError(f"Origin {action['origin']} not supported.")
+                error_msg = f"Origin {action['origin']} not supported."
+                raise ValueError(error_msg)
 
         except Exception:
             logger.exception(
@@ -649,7 +656,29 @@ class PredictorEnv(Env):  # type: ignore[misc]
         return altered_qc """
 
     def determine_valid_actions_for_state(self) -> list[int]:
-        """Determines and returns the valid actions for the current state."""
+        """Determines and returns the valid mapping (layout+routing) actions for the current state."""
+        check_nat_gates = GatesInBasis(basis_gates=self.device.basis_gates)
+        check_nat_gates(self.state)
+        only_nat_gates = check_nat_gates.property_set["all_gates_in_basis"]
+
+        if not only_nat_gates:
+            return self.actions_synthesis_indices + self.actions_opt_indices
+            
+
+        check_mapping = CheckMap(coupling_map=CouplingMap(self.device.coupling_map))
+        check_mapping(self.state)
+        mapped = check_mapping.property_set["is_swap_mapped"]
+
+        if mapped:
+            if self.num_steps > 50:
+                return [self.action_terminate_index]
+            return [self.action_terminate_index, *self.actions_opt_indices, *self.actions_final_optimization_indices]
+
+        # If not mapped, expose only mapping actions
+        return self.actions_mapping_indices + self.actions_opt_indices
+
+    """ def determine_valid_actions_for_state(self) -> list[int]:
+        #Determines and returns the valid actions for the current state.
         check_nat_gates = GatesInBasis(basis_gates=self.device.basis_gates)
         check_nat_gates(self.state)
         only_nat_gates = check_nat_gates.property_set["all_gates_in_basis"]
@@ -673,7 +702,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
             return self.actions_routing_indices
 
         # No layout applied yet
-        return self.actions_mapping_indices + self.actions_layout_indices + self.actions_opt_indices
+        return self.actions_mapping_indices + self.actions_layout_indices + self.actions_opt_indices """
     
     def export_action_effectiveness(self, path="action_effectiveness.json"):
         """Export the success/failure count of actions to a JSON file."""

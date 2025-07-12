@@ -385,22 +385,39 @@ def get_actions_mapping() -> list[dict[str, Any]]:
     routings = {a["name"]: a["transpile_pass"] for a in get_actions_routing()}
 
     # Define composite mapping actions
-    composites = [
+    stochastic = [
         ("VF2Layout", "SabreSwap"),
-        ("SabreLayout", "AIRouting"),
         ("VF2Layout", "AIRouting"),
         ("DenseLayout", "SabreSwap"),
         ("DenseLayout", "AIRouting"),
+        ("TrivialLayout", "SabreSwap"),
+        ("TrivialLayout", "AIRouting"),
+        ("SabreLayout", "AIRouting"),
     ]
 
-    composite_actions = [
+    deterministic = [
+        ("TrivialLayout", "BasicSwap"),
+        ("DenseLayout", "BasicSwap"),
+    ]
+
+    stochastic_actions = [
         {
             "name": f"{layout}+{routing}",
             "transpile_pass": composite_mapping_pass(layouts[layout], routings[routing]),
             "origin": "qiskit",
             "stochastic": True,  
         }
-        for layout, routing in composites
+        for layout, routing in stochastic
+    ]
+
+    deterinistic_actions = [
+        {
+            "name": f"{layout}+{routing}",
+            "transpile_pass": composite_mapping_pass(layouts[layout], routings[routing]),
+            "origin": "qiskit",
+            "stochastic": False,  
+        }
+        for layout, routing in deterministic
     ]
     sabre_mapping_action = {
             "name": "SabreMapping",
@@ -409,7 +426,7 @@ def get_actions_mapping() -> list[dict[str, Any]]:
             ],
             "origin": "qiskit",
         }
-    return [sabre_mapping_action] + composite_actions
+    return [sabre_mapping_action] + stochastic_actions + deterinistic_actions
     
     # return [
     #     {
