@@ -380,33 +380,63 @@ def get_actions_routing() -> list[dict[str, Any]]:
 
 def get_actions_mapping() -> list[dict[str, Any]]:
     """Returns a list of dictionaries containing information about the mapping passes that are available."""
-    return [
+    # get layout/routing pass constructors
+    layouts = {a["name"]: a["transpile_pass"] for a in get_actions_layout()}
+    routings = {a["name"]: a["transpile_pass"] for a in get_actions_routing()}
+
+    # Define composite mapping actions
+    composites = [
+        ("VF2Layout", "SabreSwap"),
+        ("SabreLayout", "AIRouting"),
+        ("VF2Layout", "AIRouting"),
+        ("DenseLayout", "SabreSwap"),
+        ("DenseLayout", "AIRouting"),
+    ]
+
+    composite_actions = [
         {
+            "name": f"{layout}+{routing}",
+            "transpile_pass": composite_mapping_pass(layouts[layout], routings[routing]),
+            "origin": "qiskit",
+            "stochastic": True,  
+        }
+        for layout, routing in composites
+    ]
+    sabre_mapping_action = {
             "name": "SabreMapping",
             "transpile_pass": lambda device: [
                 SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=False),
             ],
             "origin": "qiskit",
-        },
-        # {
-        #     "name": "BQSKitMapping",
-        #     "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
-        #         bqskit_circuit,
-        #         model=MachineModel(
-        #             num_qudits=device.num_qubits,
-        #             gate_set=get_bqskit_native_gates(device),
-        #             coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
-        #         ),
-        #         with_mapping=True,
-        #         optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-        #         #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-        #         synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
-        #         max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-        #         seed=10,
-        #     ),
-        #     "origin": "bqskit",
-        # },
-    ]
+        }
+    return [sabre_mapping_action] + composite_actions
+    
+    # return [
+    #     {
+    #         "name": "SabreMapping",
+    #         "transpile_pass": lambda device: [
+    #             SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=False),
+    #         ],
+    #         "origin": "qiskit",
+    #     },
+    # {
+    #     "name": "BQSKitMapping",
+    #     "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
+    #         bqskit_circuit,
+    #         model=MachineModel(
+    #             num_qudits=device.num_qubits,
+    #             gate_set=get_bqskit_native_gates(device),
+    #             coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
+    #         ),
+    #         with_mapping=True,
+    #         optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
+    #         #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+    #         synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
+    #         max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
+    #         seed=10,
+    #     ),
+    #     "origin": "bqskit",
+    # },
 
 
 def get_actions_synthesis() -> list[dict[str, Any]]:
@@ -439,6 +469,28 @@ def get_actions_synthesis() -> list[dict[str, Any]]:
 def get_action_terminate() -> dict[str, Any]:
     """Returns a dictionary containing information about the terminate pass that is available."""
     return {"name": "terminate"}
+
+def composite_mapping_pass(layout_pass, routing_pass):
+    """Return a function(device) -> list of Passes, applying both layout and routing passes."""
+    def passlist_fn(device):
+        # No seed passed; each pass will randomize internally if stochastic
+        return layout_pass(device) + routing_pass(device)
+    return passlist_fn
+
+def best_of_n_passmanager(passlist_fn, device, qc, n_attempts=10, metric_fn=None):
+    best_val = None
+    best_result = None
+    best_property_set = None
+    for _ in range(n_attempts):
+        pm = PassManager(passlist_fn(device))
+        out_circ = pm.run(qc)
+        prop_set = dict(pm.property_set)
+        val = metric_fn(out_circ) if metric_fn else out_circ.depth()
+        if best_val is None or val < best_val:
+            best_val = val
+            best_result = out_circ
+            best_property_set = prop_set
+    return best_result, best_property_set
 
 
 def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> tuple[QuantumCircuit, str]:

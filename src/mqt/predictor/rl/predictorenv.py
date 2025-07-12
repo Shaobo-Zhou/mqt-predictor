@@ -369,6 +369,151 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
     def apply_action(self, action_index: int) -> QuantumCircuit | None:
         """Applies the given action to the current state and returns the altered state."""
+        if action_index not in self.action_set:
+            raise ValueError(f"Action {action_index} not supported.")
+
+        action = self.action_set[action_index]
+        altered_qc = None
+        prop = None  # property_set for Qiskit actions
+
+        # Terminate action (no modification)
+        if action["name"] == "terminate":
+            return self.state
+
+        try:
+            if action["origin"] in {"qiskit", "qiskit_ai"}:
+                # --------- QISKIT & QISKIT_AI PATH ---------
+
+                # Remove cregs if AIRouting is in the action name (works for composites too!)
+                if "AIRouting" in action["name"]:
+                    self.state = self.remove_cregs(self.state)
+
+                if action.get("stochastic", False):
+                    # Composite/stochastic action: use best-of-N wrapper
+                    altered_qc, prop = rl.helper.best_of_n_passmanager(
+                        action["transpile_pass"], self.device, self.state, n_attempts=10
+                    )
+                else:
+                    # Deterministic actions and special handling for some passes
+                    if action["name"] == "QiskitO3":
+                        pm = PassManager()
+                        pm.append(
+                            DoWhileController(
+                                action["transpile_pass"](
+                                    self.device.basis_gates,
+                                    CouplingMap(self.device.coupling_map) if self.layout is not None else None,
+                                ),
+                                do_while=action["do_while"],
+                            ),
+                        )
+                    elif action["name"] in ["Opt2qBlocks", "Optimize1qGatesDecomposition"]:
+                        pm = PassManager(action["transpile_pass"](self.device.basis_gates))
+                    elif action["name"] == "AIClifford":
+                        pm = PassManager(action["transpile_pass"](CouplingMap(self.device.coupling_map)))
+                    else:
+                        transpile_pass = (
+                            action["transpile_pass"](self.device)
+                            if callable(action["transpile_pass"]) else action["transpile_pass"]
+                        )
+                        pm = PassManager(transpile_pass)
+
+                    altered_qc = pm.run(self.state)
+                    prop = pm.property_set
+
+                # ---------- PROPERTY SET & LAYOUT HANDLING ----------
+                if action_index in (
+                    self.actions_layout_indices
+                    + self.actions_mapping_indices
+                    + self.actions_final_optimization_indices
+                ):
+                    if action["name"] == "VF2PostLayout":
+                        assert prop["VF2PostLayout_stop_reason"] is not None
+                        post_layout = prop["post_layout"]
+                        if post_layout:
+                            altered_qc, _ = rl.helper.postprocess_vf2postlayout(altered_qc, post_layout, self.layout)
+                    elif action["name"] == "VF2Layout":
+                        if prop["VF2Layout_stop_reason"] == VF2LayoutStopReason.SOLUTION_FOUND:
+                            assert prop["layout"]
+                    else:
+                        assert prop["layout"]
+
+                    if prop.get("layout"):
+                        self.layout = TranspileLayout(
+                            initial_layout=prop["layout"],
+                            input_qubit_mapping=prop["original_qubit_indices"],
+                            final_layout=prop["final_layout"],
+                            _output_qubit_list=altered_qc.qubits,
+                            _input_qubit_count=self.num_qubits_uncompiled_circuit,
+                        )
+
+                elif action_index in self.actions_routing_indices:
+                    assert self.layout is not None
+                    self.layout.final_layout = prop.get("final_layout")
+
+            elif action["origin"] == "tket":
+                # -------------- TKET PATH --------------
+                try:
+                    if any(isinstance(gate[0], RCCXGate) for gate in self.state.data):
+                        self.state = self.state.decompose()
+                    tket_qc = qiskit_to_tk(self.state, preserve_param_uuid=True)
+                    transpile_pass = (
+                        action["transpile_pass"](self.device)
+                        if callable(action["transpile_pass"]) else action["transpile_pass"]
+                    )
+                    for elem in transpile_pass:
+                        elem.apply(tket_qc)
+                    qbs = tket_qc.qubits
+                    qubit_map = {qbs[i]: Qubit("q", i) for i in range(len(qbs))}
+                    tket_qc.rename_units(qubit_map)
+                    altered_qc = tk_to_qiskit(tket_qc, replace_implicit_swaps=True)
+                    if action_index in self.actions_routing_indices:
+                        assert self.layout is not None
+                        self.layout.final_layout = rl.helper.final_layout_pytket_to_qiskit(tket_qc, altered_qc)
+                except Exception:
+                    logger.exception(
+                        f"Error in executing TKET transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
+                    )
+                    self.error_occurred = True
+                    return None
+
+            elif action["origin"] == "bqskit":
+                # ------------- BQSKit PATH --------------
+                try:
+                    bqskit_qc = qiskit_to_bqskit(self.state)
+                    transpile_pass = (
+                        action["transpile_pass"](self.device)
+                        if callable(action["transpile_pass"]) else action["transpile_pass"]
+                    )
+                    if action_index in self.actions_opt_indices + self.actions_synthesis_indices:
+                        bqskit_compiled_qc = transpile_pass(bqskit_qc)
+                        altered_qc = bqskit_to_qiskit(bqskit_compiled_qc)
+                    elif action_index in self.actions_mapping_indices:
+                        bqskit_compiled_qc, initial_layout, final_layout = transpile_pass(bqskit_qc)
+                        altered_qc = bqskit_to_qiskit(bqskit_compiled_qc)
+                        layout = rl.helper.final_layout_bqskit_to_qiskit(
+                            initial_layout, final_layout, altered_qc, self.state
+                        )
+                        self.layout = layout
+                except Exception:
+                    logger.exception(
+                        f"Error in executing BQSKit transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
+                    )
+                    self.error_occurred = True
+                    return None
+
+            else:
+                raise ValueError(f"Origin {action['origin']} not supported.")
+
+        except Exception:
+            logger.exception(
+                f"Error in executing transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
+            )
+            self.error_occurred = True
+            return None
+
+        return altered_qc
+    """ def apply_action(self, action_index: int) -> QuantumCircuit | None:
+        #Applies the given action to the current state and returns the altered state.
         if action_index in self.action_set:
             action = self.action_set[action_index]
             if action["name"] == "terminate":
@@ -501,7 +646,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
             error_msg = f"Action {action_index} not supported."
             raise ValueError(error_msg)
 
-        return altered_qc
+        return altered_qc """
 
     def determine_valid_actions_for_state(self) -> list[int]:
         """Determines and returns the valid actions for the current state."""
