@@ -130,6 +130,10 @@ class PredictorEnv(Env):  # type: ignore[misc]
         }
         self.observation_space = Dict(spaces)
         self.filename = ""
+        self.action_effectiveness = {
+            self.action_set[i]["name"]: {"changed": 0, "unchanged": 0}
+            for i in self.action_set
+        }
 
     def step(self, action: int) -> tuple[dict[str, Any], float, bool, bool, dict[Any, Any]]:
         """Executes the given action and returns the new state, the reward, whether the episode is done, whether the episode is truncated and additional information."""
@@ -142,10 +146,6 @@ class PredictorEnv(Env):  # type: ignore[misc]
         elapsed = time.time() - start_time
 
         logger.info(f"⏱️  [Step {self.num_steps}] Action '{action_name}' took {elapsed:.2f} seconds")
-        # Store the timing
-        # if action_name not in self.action_timings:
-        #     self.action_timings[action_name] = []
-        # self.action_timings[action_name].append(elapsed)
 
         if not altered_qc:
             gc.collect()
@@ -167,6 +167,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         if action == self.action_terminate_index:
             reward_val = self.calculate_reward()
+            logger.info(f"Final fidelity: {reward_val}")
             done = True
         else:
             reward_val = 0
@@ -191,6 +192,13 @@ class PredictorEnv(Env):  # type: ignore[misc]
         with open(filepath, "w") as f:
             json.dump(avg_timings, f, indent=4)
         logger.info(f"📁 Saved average action timings to {filepath}")
+
+    def export_action_effectiveness(self, path="action_effectiveness.json"):
+        """Export the success/failure count of actions to a JSON file."""
+        with open(path, "w") as f:
+            json.dump(self.action_effectiveness, f, indent=4)
+        logger.info(f"📊 Saved action effectiveness to {path}")
+
     def calculate_reward(self) -> float:
         """Calculates and returns the reward for the current state."""
         if self.reward_function == "expected_fidelity":
@@ -424,6 +432,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
             error_msg = f"Action {action_index} not supported."
             raise ValueError(error_msg)
 
+        if self.num_steps > 1000:
+            return None
         return altered_qc
 
     def determine_valid_actions_for_state(self) -> list[int]:
@@ -444,6 +454,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         if mapped and self.layout is not None:  # The circuit is correctly mapped.
             return [self.action_terminate_index, *self.actions_opt_indices]
+            
 
         if self.layout is not None:  # The circuit is not yet mapped but a layout is set.
             return self.actions_routing_indices

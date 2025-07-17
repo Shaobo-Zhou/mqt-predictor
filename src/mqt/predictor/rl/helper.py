@@ -167,43 +167,43 @@ def get_actions_opt() -> list[dict[str, Any]]:
             "transpile_pass": [RemoveRedundancies()],
             "origin": "tket",
         },
-        {
-            "name": "QiskitO3",
-            "transpile_pass": lambda native_gate, coupling_map: [
-                Collect2qBlocks(),
-                ConsolidateBlocks(basis_gates=native_gate),
-                UnitarySynthesis(basis_gates=native_gate, coupling_map=coupling_map),
-                Optimize1qGatesDecomposition(basis=native_gate),
-                CommutativeCancellation(basis_gates=native_gate),
-                GatesInBasis(native_gate),
-                ConditionalController(
-                    common.generate_translation_passmanager(
-                        target=None, basis_gates=native_gate, coupling_map=coupling_map
-                    ).to_flow_controller(),
-                    condition=lambda property_set: not property_set["all_gates_in_basis"],
-                ),
-                Depth(recurse=True),
-                FixedPoint("depth"),
-                Size(recurse=True),
-                FixedPoint("size"),
-                MinimumPoint(["depth", "size"], "optimization_loop"),
-            ],
-            "origin": "qiskit",
-            "do_while": lambda property_set: (not property_set["optimization_loop_minimum_point"]),
-        },
-        {
-            "name": "BQSKitO2",
-            "transpile_pass": lambda circuit: bqskit_compile(
-                circuit,
-                optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
-                max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-                seed=10,
-            ), 
-            "origin": "bqskit", 
+        # {
+        #     "name": "QiskitO3",
+        #     "transpile_pass": lambda native_gate, coupling_map: [
+        #         Collect2qBlocks(),
+        #         ConsolidateBlocks(basis_gates=native_gate),
+        #         UnitarySynthesis(basis_gates=native_gate, coupling_map=coupling_map),
+        #         Optimize1qGatesDecomposition(basis=native_gate),
+        #         CommutativeCancellation(basis_gates=native_gate),
+        #         GatesInBasis(native_gate),
+        #         ConditionalController(
+        #             common.generate_translation_passmanager(
+        #                 target=None, basis_gates=native_gate, coupling_map=coupling_map
+        #             ).to_flow_controller(),
+        #             condition=lambda property_set: not property_set["all_gates_in_basis"],
+        #         ),
+        #         Depth(recurse=True),
+        #         FixedPoint("depth"),
+        #         Size(recurse=True),
+        #         FixedPoint("size"),
+        #         MinimumPoint(["depth", "size"], "optimization_loop"),
+        #     ],
+        #     "origin": "qiskit",
+        #     "do_while": lambda property_set: (not property_set["optimization_loop_minimum_point"]),
+        # },
+        # {
+        #     "name": "BQSKitO2",
+        #     "transpile_pass": lambda circuit: bqskit_compile(
+        #         circuit,
+        #         optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
+        #         #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+        #         synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
+        #         max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
+        #         seed=10,
+        #     ), 
+        #     "origin": "bqskit", 
             
-        },
+        # },
     ]
 
 
@@ -294,24 +294,24 @@ def get_actions_mapping() -> list[dict[str, Any]]:
             ],
             "origin": "qiskit",
         },
-        {
-            "name": "BQSKitMapping",
-            "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
-                bqskit_circuit,
-                model=MachineModel(
-                    num_qudits=device.num_qubits,
-                    gate_set=get_bqskit_native_gates(device),
-                    coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
-                ),
-                with_mapping=True,
-                optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
-                max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-                seed=10,
-            ),
-            "origin": "bqskit",
-        },
+        # {
+        #     "name": "BQSKitMapping",
+        #     "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
+        #         bqskit_circuit,
+        #         model=MachineModel(
+        #             num_qudits=device.num_qubits,
+        #             gate_set=get_bqskit_native_gates(device),
+        #             coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
+        #         ),
+        #         with_mapping=True,
+        #         optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
+        #         #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+        #         synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
+        #         max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
+        #         seed=10,
+        #     ),
+        #     "origin": "bqskit",
+        # },
     ]
 
 
@@ -325,19 +325,19 @@ def get_actions_synthesis() -> list[dict[str, Any]]:
             ],
             "origin": "qiskit",
         },
-        {
-            "name": "BQSKitSynthesis",
-            "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
-                bqskit_circuit,
-                model=MachineModel(bqskit_circuit.num_qudits, gate_set=get_bqskit_native_gates(device)),
-                optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
-                max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-                seed=10,
-            ),
-            "origin": "bqskit",
-        },
+        # {
+        #     "name": "BQSKitSynthesis",
+        #     "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
+        #         bqskit_circuit,
+        #         model=MachineModel(bqskit_circuit.num_qudits, gate_set=get_bqskit_native_gates(device)),
+        #         optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
+        #         #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+        #         synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
+        #         max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
+        #         seed=10,
+        #     ),
+        #     "origin": "bqskit",
+        # },
     ]
 
 
@@ -365,34 +365,34 @@ def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> t
         file_list = list(get_path_training_circuits().glob("*.qasm"))
         assert len(file_list) > 0 """
     
-    base_path = get_path_training_circuits() / "mqt_bench_training_30"
-    #base_path = get_path_training_circuits() / "mqt_bench_training"
+    #base_path = get_path_training_circuits() / "training_data_compilation"
+    base_path = get_path_training_circuits() / "new_indep_circuits" / "train"
     #base_path = get_path_training_circuits() / "training_data_compilation"
     file_list = list(base_path.rglob("*.qasm"))
 
     # found_suitable_qc = False
     # while not found_suitable_qc:
-    #     rng = np.random.default_rng(10)
     #     random_index = rng.integers(len(file_list))
     #     num_qubits = int(str(file_list[random_index]).split("_")[-1].split(".")[0])
     #     if max_qubits and num_qubits > max_qubits:
     #         continue
     #     found_suitable_qc = True
-    found_suitable_qc = False
-    while not found_suitable_qc:
-        random_index = rng.integers(len(file_list))
-        num_qubits = int(str(file_list[random_index]).split("_")[-1].split(".")[0])
-        if max_qubits and num_qubits > max_qubits:
-            continue
-        found_suitable_qc = True
 
-    try:
-        qc = QuantumCircuit.from_qasm_file(str(file_list[random_index]))
-    except Exception:
-        raise RuntimeError("Could not read QuantumCircuit from: " + str(file_list[random_index])) from None
+    # try:
+    #     qc = QuantumCircuit.from_qasm_file(str(file_list[random_index]))
+    # except Exception:
+    #     raise RuntimeError("Could not read QuantumCircuit from: " + str(file_list[random_index])) from None
 
-    return qc, str(file_list[random_index])
+    # return qc, str(file_list[random_index])
 
+    rng = rng or np.random.default_rng()
+    while True:
+        file_path = rng.choice(file_list)
+        try:
+            qc = QuantumCircuit.from_qasm_file(str(file_path))
+            return qc, str(file_path)
+        except Exception:
+            print(f"Failed to load {file_path}, retrying...")
 
 def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float64]]:
     """Creates a feature dictionary for a given quantum circuit.
