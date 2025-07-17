@@ -27,6 +27,7 @@ from qiskit.passmanager.flow_controllers import DoWhileController
 from qiskit.transpiler import CouplingMap, PassManager, TranspileLayout
 from qiskit.transpiler.passes import CheckMap, GatesInBasis
 from qiskit.transpiler.passes.layout.vf2_layout import VF2LayoutStopReason
+from qiskit.circuit.library.standard_gates import RCCXGate
 
 from mqt.bench.devices import get_device_by_name
 from mqt.predictor import reward, rl
@@ -384,23 +385,27 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     self.layout.final_layout = pm_property_set.get("final_layout")
 
         elif action["origin"] == "tket":
+            # -------------- TKET PATH --------------
             try:
+                if any(isinstance(gate[0], RCCXGate) for gate in self.state.data):
+                    self.state = self.state.decompose()
                 tket_qc = qiskit_to_tk(self.state, preserve_param_uuid=True)
+                transpile_pass = (
+                    action["transpile_pass"](self.device)
+                    if callable(action["transpile_pass"]) else action["transpile_pass"]
+                )
                 for elem in transpile_pass:
                     elem.apply(tket_qc)
                 qbs = tket_qc.qubits
                 qubit_map = {qbs[i]: Qubit("q", i) for i in range(len(qbs))}
-                tket_qc.rename_units(qubit_map)  # type: ignore[arg-type]
-                altered_qc = tk_to_qiskit(tket_qc)
+                tket_qc.rename_units(qubit_map)
+                altered_qc = tk_to_qiskit(tket_qc, replace_implicit_swaps=True)
                 if action_index in self.actions_routing_indices:
                     assert self.layout is not None
                     self.layout.final_layout = rl.helper.final_layout_pytket_to_qiskit(tket_qc, altered_qc)
-
             except Exception:
                 logger.exception(
-                    "Error in executing TKET transpile  pass for {action} at step {i} for {filename}".format(
-                        action=action["name"], i=self.num_steps, filename=self.filename
-                    )
+                    f"Error in executing TKET transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
                 )
                 self.error_occurred = True
                 return None
