@@ -21,13 +21,17 @@ from pytket.passes import (
 from pytket.placement import place_with_map
 from qiskit import QuantumCircuit
 from qiskit.circuit.equivalence_library import StandardEquivalenceLibrary
-from qiskit.circuit.library import XGate, ZGate
+from qiskit.circuit.library import XGate, YGate, ZGate, CXGate, CYGate, CZGate, HGate, TGate, TdgGate, SdgGate, SGate, SwapGate
 from qiskit.transpiler import CouplingMap, Layout, PassManager, TranspileLayout
+from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qiskit_ibm_transpiler.ai.routing import AIRouting
 from qiskit.transpiler.passes import (
     ApplyLayout,
     BasicSwap,
     BasisTranslator,
+    CheckMap,
     Collect2qBlocks,
+    CollectCliffords,
     CommutativeCancellation,
     CommutativeInverseCancellation,
     ConsolidateBlocks,
@@ -38,13 +42,16 @@ from qiskit.transpiler.passes import (
     FullAncillaAllocation,
     GatesInBasis,
     InverseCancellation,
+    LookaheadSwap,
     MinimumPoint,
     Optimize1qGatesDecomposition,
     OptimizeCliffords,
     RemoveDiagonalGatesBeforeMeasure,
     SabreLayout,
+    SabreSwap,
     Size,
     TrivialLayout,
+    
     UnitarySynthesis,
     VF2Layout,
     VF2PostLayout,
@@ -114,7 +121,7 @@ def get_actions_opt() -> list[dict[str, Any]]:
     return [
         {
             "name": "Optimize1qGatesDecomposition",
-            "transpile_pass": [Optimize1qGatesDecomposition()],
+            "transpile_pass": lambda native_gate: [Optimize1qGatesDecomposition(basis=native_gate)],
             "origin": "qiskit",
         },
         {
@@ -134,17 +141,23 @@ def get_actions_opt() -> list[dict[str, Any]]:
         },
         {
             "name": "InverseCancellation",
-            "transpile_pass": [InverseCancellation([XGate(), ZGate()])],
+            "transpile_pass": [InverseCancellation([
+                XGate(), YGate(), ZGate(),         
+                HGate(),                      
+                CXGate(), CYGate(), CZGate(),    
+                SwapGate(),                   
+                (TGate(), TdgGate()), (SGate(), SdgGate())
+            ])],
             "origin": "qiskit",
         },
         {
             "name": "OptimizeCliffords",
-            "transpile_pass": [OptimizeCliffords()],
+            "transpile_pass": [CollectCliffords(), OptimizeCliffords()],
             "origin": "qiskit",
         },
         {
             "name": "Opt2qBlocks",
-            "transpile_pass": [Collect2qBlocks(), ConsolidateBlocks()],
+            "transpile_pass": lambda native_gate: [Collect2qBlocks(), ConsolidateBlocks(basis_gates=native_gate)],
             "origin": "qiskit",
         },
         {
@@ -166,41 +179,6 @@ def get_actions_opt() -> list[dict[str, Any]]:
             "name": "RemoveRedundancies",
             "transpile_pass": [RemoveRedundancies()],
             "origin": "tket",
-        },
-        {
-            "name": "QiskitO3",
-            "transpile_pass": lambda native_gate, coupling_map: [
-                Collect2qBlocks(),
-                ConsolidateBlocks(basis_gates=native_gate),
-                UnitarySynthesis(basis_gates=native_gate, coupling_map=coupling_map),
-                Optimize1qGatesDecomposition(basis=native_gate),
-                CommutativeCancellation(basis_gates=native_gate),
-                GatesInBasis(native_gate),
-                ConditionalController(
-                    common.generate_translation_passmanager(
-                        target=None, basis_gates=native_gate, coupling_map=coupling_map
-                    ).to_flow_controller(),
-                    condition=lambda property_set: not property_set["all_gates_in_basis"],
-                ),
-                Depth(recurse=True),
-                FixedPoint("depth"),
-                Size(recurse=True),
-                FixedPoint("size"),
-                MinimumPoint(["depth", "size"], "optimization_loop"),
-            ],
-            "origin": "qiskit",
-            "do_while": lambda property_set: (not property_set["optimization_loop_minimum_point"]),
-        },
-        {
-            "name": "BQSKitO2",
-            "transpile_pass": lambda circuit: bqskit_compile(
-                circuit,
-                optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-                seed=10,
-            ),
-            "origin": "bqskit",
         },
     ]
 
@@ -260,6 +238,19 @@ def get_actions_layout() -> list[dict[str, Any]]:
             ],
             "origin": "qiskit",
         },
+        {
+            "name": "SabreLayout",
+            "transpile_pass": lambda device: [
+                SabreLayout(
+                    coupling_map=CouplingMap(device.coupling_map),
+                    skip_routing=True,        
+                ),
+                FullAncillaAllocation(coupling_map=CouplingMap(device.coupling_map)),
+                EnlargeWithAncilla(),
+                ApplyLayout(),
+            ],
+            "origin": "qiskit",
+        },
     ]
 
 
@@ -279,11 +270,30 @@ def get_actions_routing() -> list[dict[str, Any]]:
             ],
             "origin": "tket",
         },
+        {
+            "name": "SabreSwap",
+            "transpile_pass": lambda device: [SabreSwap(coupling_map=CouplingMap(device.coupling_map), 
+                                                        heuristic="decay")],
+            "origin": "qiskit",
+        },
+        {
+            "name": "AIRouting",
+            "transpile_pass": lambda device: [
+                SafeAIRouting(
+                    coupling_map=device.coupling_map,
+                    optimization_level=3,
+                    layout_mode="optimize",
+                    local_mode=True
+                )
+            ],
+            "origin": "qiskit_ai",
+            "stochastic": True,  
+        },
     ]
 
 
 def get_actions_mapping() -> list[dict[str, Any]]:
-    """Returns a list of dictionaries containing information about the mapping passes that are available."""
+    
     return [
         {
             "name": "SabreMapping",
@@ -291,23 +301,36 @@ def get_actions_mapping() -> list[dict[str, Any]]:
                 SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=False),
             ],
             "origin": "qiskit",
+            "stochastic": True,
         },
         {
-            "name": "BQSKitMapping",
-            "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
-                bqskit_circuit,
-                model=MachineModel(
-                    num_qudits=device.num_qubits,
-                    gate_set=get_bqskit_native_gates(device),
-                    coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
-                ),
-                with_mapping=True,
-                optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-                synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-                max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-                seed=10,
-            ),
-            "origin": "bqskit",
+            "name": "SabreLayout+AIRouting",
+            "transpile_pass": lambda device: [
+                SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=True),
+                FullAncillaAllocation(coupling_map=CouplingMap(device.coupling_map)),
+                EnlargeWithAncilla(),
+                ApplyLayout(),
+                SafeAIRouting(
+                    coupling_map=device.coupling_map,
+                    optimization_level=3,
+                    layout_mode="optimize",
+                    local_mode=True
+                )
+            ],
+            "origin": "qiskit_ai",
+            "stochastic": True,
+        },
+        {
+            "name": "SabreLayout+BasicSwap",
+            "transpile_pass": lambda device: [
+                SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=True),
+                FullAncillaAllocation(coupling_map=CouplingMap(device.coupling_map)),
+                EnlargeWithAncilla(),
+                ApplyLayout(),
+                BasicSwap(coupling_map=CouplingMap(device.coupling_map))
+            ],
+            "origin": "qiskit",
+            "stochastic": True,
         },
     ]
 
@@ -342,6 +365,59 @@ def get_action_terminate() -> dict[str, Any]:
     return {"name": "terminate"}
 
 
+def remove_cregs(qc: QuantumCircuit) -> QuantumCircuit:
+        new_qc = QuantumCircuit(qc.num_qubits, name=qc.name)
+    
+        for instr, qargs, cargs in qc.data:
+            # If there are no classical arguments, keep the instruction
+            if not cargs:
+                new_qc.append(instr, qargs)
+            # (Optionally: if you want to keep barriers or certain instrs that don't use cregs, adjust logic here)
+
+        return new_qc
+
+class SafeAIRouting(AIRouting):
+    def run(self, dag):
+        qc = dag_to_circuit(dag)
+        # remove cregs from qc here before running the base pass!
+        qc = remove_cregs(qc)
+        dag = circuit_to_dag(qc)
+        return super().run(dag)
+    
+def best_of_n_passmanager(passlist_fn, device, qc, n_attempts=10, metric_fn=None, require_layout=True):
+    """
+    Runs passlist_fn(device) in a PassManager up to n_attempts times and returns the circuit
+    (and property set) with the best metric value. If require_layout is True,
+    only considers results where 'layout' or 'final_layout' is present in property_set.
+    """
+    best_val = None
+    best_result = None
+    best_property_set = None
+    for i in range(n_attempts):
+        pm = PassManager(passlist_fn(device))
+        try:
+            out_circ = pm.run(qc)
+            prop_set = dict(pm.property_set)
+            # Optionally check for a valid mapping
+            if require_layout and prop_set.get("layout") is None and prop_set.get("final_layout") is None:
+                continue  # Skip failed mapping
+            val = metric_fn(out_circ) if metric_fn else out_circ.depth()
+            if best_val is None or val < best_val:
+                #print(f"New lowest depth: {val}")
+                print(f"New lowest SWAP counts: {val}")
+                best_val = val
+                best_result = out_circ
+                best_property_set = prop_set
+        except Exception as e:
+            print(f"[best_of_n_passmanager] Attempt {i+1} failed with error: {e}")
+            continue
+
+    if best_result is not None:
+        return best_result, best_property_set
+    else:
+        print("All mapping attempts failed; returning original circuit.")
+        return qc, {}
+    
 def get_state_sample(max_qubits: int | None = None) -> tuple[QuantumCircuit, str]:
     """Returns a random quantum circuit from the training circuits folder.
 
@@ -351,7 +427,7 @@ def get_state_sample(max_qubits: int | None = None) -> tuple[QuantumCircuit, str
     Returns:
         A tuple containing the random quantum circuit and the path to the file from which it was read.
     """
-    """ file_list = list(get_path_training_circuits().glob("*.qasm"))
+    file_list = list(get_path_training_circuits().glob("*.qasm"))
 
     path_zip = get_path_training_circuits() / "training_data_compilation.zip"
     if len(file_list) == 0 and path_zip.exists():
@@ -359,29 +435,76 @@ def get_state_sample(max_qubits: int | None = None) -> tuple[QuantumCircuit, str
             zip_ref.extractall(get_path_training_circuits())
 
         file_list = list(get_path_training_circuits().glob("*.qasm"))
-        assert len(file_list) > 0 """
-    #base_path = get_path_training_circuits() / "mqt_bench_training"
-    base_path = get_path_training_circuits() / "training_data_compilation"
-    file_list = list(base_path.rglob("*.qasm"))
+        assert len(file_list) > 0
 
-    found_suitable_qc = False
-    while not found_suitable_qc:
-        rng = np.random.default_rng(10)
-        random_index = rng.integers(len(file_list))
-        num_qubits = int(str(file_list[random_index]).split("_")[-1].split(".")[0])
-        if max_qubits and num_qubits > max_qubits:
-            continue
-        found_suitable_qc = True
-
-    try:
-        qc = QuantumCircuit.from_qasm_file(str(file_list[random_index]))
-    except Exception:
-        raise RuntimeError("Could not read QuantumCircuit from: " + str(file_list[random_index])) from None
-
-    return qc, str(file_list[random_index])
+    rng = rng or np.random.default_rng()
+    while True:
+        file_path = rng.choice(file_list)
+        try:
+            qc = QuantumCircuit.from_qasm_file(str(file_path))
+            return qc, str(file_path)
+        except Exception:
+            print(f"Failed to load {file_path}, retrying...")
 
 
-def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float64]]:
+def get_openqasm_gates() -> list[str]:
+    """Returns a list of all quantum gates within the openQASM 2.0 standard header."""
+    # according to https://github.com/Qiskit/qiskit-terra/blob/main/qiskit/qasm/libs/qelib1.inc
+    return [
+        "u3",
+        "u2",
+        "u1",
+        "cx",
+        "id",
+        "u0",
+        "u",
+        "p",
+        "x",
+        "y",
+        "z",
+        "h",
+        "s",
+        "sdg",
+        "t",
+        "tdg",
+        "rx",
+        "ry",
+        "rz",
+        "sx",
+        "sxdg",
+        "cz",
+        "cy",
+        "swap",
+        "ch",
+        "ccx",
+        "cswap",
+        "crx",
+        "cry",
+        "crz",
+        "cu1",
+        "cp",
+        #"cu3",
+        "csx",
+        "cu",
+        "rxx",
+        "rzz",
+        "rccx",
+        "rc3x",
+        "c3x",
+        "c3sqrtx",
+        "c4x",
+    ]
+
+def dict_to_featurevector(gate_dict: dict[str, int]) -> dict[str, int]:
+    """Calculates and returns the feature vector of a given quantum circuit gate dictionary."""
+    res_dct = dict.fromkeys(get_openqasm_gates(), 0)
+    for key, val in dict(gate_dict).items():
+        if key in res_dct:
+            res_dct[key] = val
+
+    return res_dct
+
+def create_feature_dict(qc: QuantumCircuit, basis_gates: list[str], coupling_map) -> dict[str, int | NDArray[np.float64]]:
     """Creates a feature dictionary for a given quantum circuit.
 
     Arguments:
@@ -390,11 +513,31 @@ def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float6
     Returns:
         The feature dictionary for the given quantum circuit.
     """
-    feature_dict = {
-        "num_qubits": qc.num_qubits,
-        "depth": qc.depth(),
-    }
 
+    gates = get_openqasm_gates()
+    ops_list = qc.count_ops()
+    ops_list_dict = dict_to_featurevector(ops_list)
+
+    feature_dict = {}
+    for key in ops_list_dict:
+        feature_dict[key] = float(ops_list_dict[key])
+    
+    feature_dict["native_mask"] = np.array([1 if g in basis_gates else 0 for g in gates])
+    
+    feature_dict["measure"] = float(ops_list.get("measure", 0))
+    feature_dict["num_qubits"] = float(qc.num_qubits)
+    feature_dict["depth"] = float(qc.depth())
+    #feature_dict["gate_count"] = float(qc.size())
+    TWO_QUBIT_GATES = {"cx", "cz", "swap", "rzz", "rxx", "cy", "ch", 
+                   "crx", "cry", "crz", "cu1", "cp", "csx", "cu"}
+
+    def count_two_qubit_gates(qc: QuantumCircuit) -> int:
+        ops = qc.count_ops()
+        return sum(ops.get(gate, 0) for gate in TWO_QUBIT_GATES)
+    
+    feature_dict["num_2q_gates"] = float(count_two_qubit_gates(qc))
+
+    
     supermarq_features = calc_supermarq_features(qc)
     # for all dict values, put them in a list each
     feature_dict["program_communication"] = np.array([supermarq_features.program_communication], dtype=np.float32)
@@ -402,6 +545,33 @@ def create_feature_dict(qc: QuantumCircuit) -> dict[str, int | NDArray[np.float6
     feature_dict["entanglement_ratio"] = np.array([supermarq_features.entanglement_ratio], dtype=np.float32)
     feature_dict["parallelism"] = np.array([supermarq_features.parallelism], dtype=np.float32)
     feature_dict["liveness"] = np.array([supermarq_features.liveness], dtype=np.float32)
+    
+    check_nat_gates = GatesInBasis(basis_gates=basis_gates)
+    check_nat_gates(qc)
+    only_nat_gates = check_nat_gates.property_set["all_gates_in_basis"]
+
+    check_mapping = CheckMap(coupling_map=CouplingMap(coupling_map))
+    check_mapping(qc)
+    mapped = check_mapping.property_set["is_swap_mapped"]
+
+    feature_dict["only_nat_gates"] = int(only_nat_gates)
+    feature_dict["mapped"] = int(mapped)
+
+    assert 0 <= feature_dict["num_qubits"] < 128, f'num_qubits {feature_dict["num_qubits"]} out of bounds'
+
+    assert 0 <= feature_dict["depth"] < 75_000, f'depth {feature_dict["depth"]} out of bounds'
+
+    for gate in ops_list_dict:
+        if gate in ['rz', 'sx', 'x', 'cx', 'y', 'z', 'h', 'swap','s', 'sdg', 'u']:
+            assert 0 <= feature_dict[gate] < 120_000, f'{gate} count {feature_dict[gate]} out of bounds'
+        else:
+            assert 0 <= feature_dict[gate] < 6_000, f'{gate} count {feature_dict[gate]} out of bounds'
+
+    assert 0 <= feature_dict["measure"] < 128, f'measure {feature_dict["measure"]} out of bounds'
+
+    for field in ["program_communication", "critical_depth", "entanglement_ratio", "parallelism", "liveness"]:
+        val = feature_dict[field][0]
+        assert 0.0 <= val <= 1.0, f'{field} value {val} out of bounds'
 
     return feature_dict
 

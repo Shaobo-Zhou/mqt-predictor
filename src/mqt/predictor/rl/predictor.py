@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from sb3_contrib import MaskablePPO
@@ -22,12 +24,15 @@ class Predictor:
     """The Predictor class is used to train a reinforcement learning model for a given figure of merit and device such that it acts as a compiler."""
 
     def __init__(
-        self, figure_of_merit: reward.figure_of_merit, device_name: str, logger_level: int = logging.INFO
+        self, figure_of_merit: reward.figure_of_merit, device_name: str, logger_level: int = logging.INFO,
+        reward_neg: float = -0.005, 
+        reward_pos: float = 1.0,
     ) -> None:
         """Initializes the Predictor object."""
         logger.setLevel(logger_level)
 
-        self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name)
+        self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name, reward_neg=reward_neg,
+            reward_pos=reward_pos,)
         self.device_name = device_name
         self.figure_of_merit = figure_of_merit
 
@@ -50,16 +55,52 @@ class Predictor:
         used_compilation_passes = []
         terminated = False
         truncated = False
-        while not (terminated or truncated):
+
+        step_count = 0
+        max_steps = 200
+        recent_actions = deque(maxlen=8)
+        blocked_actions = set()
+
+        unstable_actions = {"AIRouting", "AICliffordSynthesis", "AILinearFunctionSynthesis", "AIPermutationSynthesis"}
+        for idx, action in self.env.action_set.items():
+            if action["name"] in unstable_actions:
+                blocked_actions.add(idx)
+
+        while not (terminated or truncated) and step_count < max_steps:
             action_masks = get_action_masks(self.env)
-            action, _ = trained_rl_model.predict(obs, action_masks=action_masks)
+            # Mask out repeated actions
+            if blocked_actions:
+                action_masks = deepcopy(action_masks)
+                for idx in blocked_actions:
+                    action_masks[idx] = False
+
+            action, _ = trained_rl_model.predict(obs, action_masks=action_masks, deterministic=True)
             action = int(action)
+
+            recent_actions.append(action)
+
+            # If the same action is used consecutively, block it to avoid an infinite loop
+            max_cycle_length = 4
+
+            def is_cycle(lst, k):
+                if len(lst) < 2*k:
+                    return False
+                return lst[-2*k:-k] == lst[-k:]
+            
+            for k in range(2, max_cycle_length+1):
+                if is_cycle(list(recent_actions), k):
+                    print(f"Avoiding {k}-cycle infinite loop pattern")
+                    for cyc_action in set(list(recent_actions)[-k:]):
+                        blocked_actions.add(cyc_action)
+                    break
+
             action_item = self.env.action_set[action]
             used_compilation_passes.append(action_item["name"])
             obs, _reward_val, terminated, truncated, _info = self.env.step(action)
+            step_count += 1
 
         if not self.env.error_occurred:
-            return self.env.state, used_compilation_passes
+            return self.env.state, _reward_val, used_compilation_passes
 
         msg = "Error occurred during compilation."
         raise RuntimeError(msg)
@@ -83,7 +124,7 @@ class Predictor:
             n_steps = 10
             progress_bar = False
         else:
-            n_steps = 500
+            n_steps = 2048
             progress_bar = True
 
         logger.debug("Start training for: " + self.figure_of_merit + " on " + self.device_name)
