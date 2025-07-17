@@ -203,7 +203,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
             self.state = self.state.decompose(gates_to_decompose="clifford")
 
         self.state._layout = self.layout  # noqa: SLF001
-        obs = rl.helper.create_feature_dict(self.state)
+        obs = rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map)
         for key in ["mapped", "only_nat_gates"]:
             print(f"{key}: {obs[key]}")
 
