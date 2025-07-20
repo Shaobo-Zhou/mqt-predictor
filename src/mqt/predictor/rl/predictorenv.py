@@ -43,12 +43,11 @@ from mqt.predictor.hellinger import get_hellinger_model_path
 logger = logging.getLogger("mqt-predictor")
 logger.propagate = False
 
-
 class PredictorEnv(Env):  # type: ignore[misc]
     """Predictor environment for reinforcement learning."""
 
     def __init__(
-        self, reward_function: reward.figure_of_merit = "expected_fidelity", device_name: str = "ibm_washington",
+        self, reward_function: reward.figure_of_merit = "expected_fidelity", device_name: str = "ibm_washington", curriculum=False,
         reward_neg: float = -0.01,
         reward_pos: float = 1.0,
     ) -> None:
@@ -65,11 +64,13 @@ class PredictorEnv(Env):  # type: ignore[misc]
         self.used_actions: list[str] = []
         self.action_timings = {}
         self.device = get_device_by_name(device_name)
+        self.curriculum = curriculum
         self.curriculum_df = None
         self.curriculum_bins = None
         self.current_difficulty_level = 0
         self.max_difficulty_level = 4  
         self.curriculum_sampling_enabled = False
+        
         # check for uni-directional coupling map
         for a, b in self.device.coupling_map:
             if [b, a] not in self.device.coupling_map:
@@ -141,22 +142,24 @@ class PredictorEnv(Env):  # type: ignore[misc]
                 spaces[gate] = Discrete(120000)
             else:
                 spaces[gate] = Discrete(6000)
+        spaces["num_2q_gates"] = Discrete(100000)
         spaces["native_mask"] = Box(low=0, high=1, shape=(len(rl.helper.get_openqasm_gates()),), dtype=np.int32)
         
         
         spaces["measure"] = Discrete(128)
-        # spaces["avg_hopcount"] = Box(low=-1, high=128, shape=(1,), dtype=np.float32)  
-        # spaces["max_degree"] = Discrete(128)
-        # spaces["min_degree"] = Discrete(128)
-        #spaces["adj_std"] = Box(low=-1, high=10000, shape=(1,), dtype=np.float32)
         self.observation_space = Dict(spaces)
         self.filename = ""
         self.action_effectiveness = {
             self.action_set[i]["name"]: {"changed": 0, "unchanged": 0}
             for i in self.action_set
         }
-        self.reward_neg = reward_neg
+        
+        if self.curriculum == True:
+            self.reward_neg = reward_neg * (1 - self.current_difficulty_level / (self.max_difficulty_level))
+        else:
+            self.reward_neg = reward_neg
         self.reward_pos = reward_pos
+
 
 
     def step(self, action: int) -> tuple[dict[str, Any], float, bool, bool, dict[Any, Any]]:
@@ -168,11 +171,13 @@ class PredictorEnv(Env):  # type: ignore[misc]
         prev_obs = rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map)
         prev_fidelity = None
 
+        # Calculate fidelity if the circuit is in a terminable state (valid)
         if self.action_terminate_index in self.determine_valid_actions_for_state():
             try:
                 prev_fidelity = self.calculate_reward()
             except Exception:
                 prev_fidelity = None
+
         start_time = time.time()
         altered_qc = self.apply_action(action)
         elapsed = time.time() - start_time
@@ -194,41 +199,42 @@ class PredictorEnv(Env):  # type: ignore[misc]
 
         self.valid_actions = self.determine_valid_actions_for_state()
         if len(self.valid_actions) == 0:
-            msg = "No valid actions left."
-            raise RuntimeError(msg)
+            raise RuntimeError("No valid actions left.")
+
+        done = False
+        reward_val = self.reward_neg  # negative step penalty
+        #reward_val = 0
+        new_obs = rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map)
 
         if action == self.action_terminate_index:
+            # Final fidelity reward
             reward_val = self.calculate_reward()
             logger.info(f"Final Fidelity: {reward_val}")
             done = True
         else:
-            reward_val = self.reward_neg
-            new_obs = rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map)
+            fidelity_delta = None
+            new_fidelity = None
+            if self.action_terminate_index in self.valid_actions:
+                try:
+                    new_fidelity = self.calculate_reward()
+                    # Reward/Penalize fidelity change from the best fidelity achieved
+                    if prev_fidelity is not None:
+                        if not hasattr(self, "best_fidelity_so_far") or self.best_fidelity_so_far is None:
+                            self.best_fidelity_so_far = prev_fidelity
+                        fidelity_delta = new_fidelity - self.best_fidelity_so_far
+                        if fidelity_delta != 0.0:
+                            reward_val += self.reward_pos * fidelity_delta
+                            logger.info(f"Fidelity change vs. best so far: {fidelity_delta}")
+                        if new_fidelity > self.best_fidelity_so_far:
+                            self.best_fidelity_so_far = new_fidelity
+                except Exception:
+                    pass
+
             if self.features_changed(prev_obs, new_obs):
                 self.action_effectiveness[action_name]["changed"] += 1
-                #reward_val = 0
-                if self.action_terminate_index in self.valid_actions:
-                    fidelity_reward = 0
-                    try:
-                        new_fidelity = self.calculate_reward()
-                        if prev_fidelity is not None and new_fidelity > prev_fidelity:
-                            reward_val = 0
-                            logger.info(f"Fidelity gain of {new_fidelity} - {prev_fidelity} = {new_fidelity - prev_fidelity}")
-                            # Reward proportional to improvement, or just self.reward_positive_fidelity
-                            fidelity_reward = self.reward_pos * (new_fidelity - prev_fidelity)
-                        elif prev_fidelity is not None and new_fidelity < prev_fidelity:
-                            logger.info(f"Fidelity gain of {new_fidelity} - {prev_fidelity} = {new_fidelity - prev_fidelity}")
-                            fidelity_reward = self.reward_pos * (new_fidelity - prev_fidelity)
-                    except Exception:
-                        fidelity_reward = 0
-                    reward_val += fidelity_reward
             else:
                 self.action_effectiveness[action_name]["unchanged"] += 1
                 logger.info("Ineffective action")
-                #reward_val = self.reward_neg
-                #reward_val = 0
-
-            done = False
 
         # in case the Qiskit.QuantumCircuit has unitary or u gates in it, decompose them (because otherwise qiskit will throw an error when applying the BasisTranslator
         if self.state.count_ops().get("unitary"):
@@ -277,16 +283,62 @@ class PredictorEnv(Env):  # type: ignore[misc]
         self.curriculum_sampling_enabled = enable_sampling
         self.current_difficulty_level = 0
 
+    def sample_circuit_by_curriculum_bin(self):
+        """
+        Samples a circuit file path using the current curriculum bin, with 80% probability from the current bin,
+        and 20% probability from all other bins combined.
+        """
+        bin_labels = ["very_easy", "easy", "medium", "hard", "very_hard"]
+        current_bin = self.curriculum_bins[self.current_difficulty_level]
+        main_prob = 0.9
+        secondary_prob = 1.0 - main_prob
+        n_bins = len(self.curriculum_bins)
+
+        # Get indices for all circuits in current bin and others
+        df = self.curriculum_df
+        current_bin_mask = df["complexity_bin"] == current_bin
+        other_mask = ~current_bin_mask
+
+        current_bin_files = df.loc[current_bin_mask, "file"].tolist()
+        other_bin_files = df.loc[other_mask, "file"].tolist()
+
+        n_current = len(current_bin_files)
+        n_other = len(other_bin_files)
+
+        if n_current == 0 or (n_other == 0 and n_current == 0):
+            raise ValueError("No circuits available in current or other bins for curriculum sampling!")
+
+        # Probabilities
+        p_current = main_prob / n_current if n_current > 0 else 0
+        p_other = secondary_prob / n_other if n_other > 0 else 0
+
+        # Build full list and probabilities
+        all_files = current_bin_files + other_bin_files
+        all_probs = [p_current] * n_current + [p_other] * n_other
+
+        # Sample
+        sampled_file = np.random.choice(all_files, p=all_probs)
+        return sampled_file
+        
+
     def increase_curriculum_difficulty(self) -> bool:
-        """Increase difficulty level if possible, return True if updated."""
+        if not self.curriculum_sampling_enabled:
+            return False
+        # Example: linearly map difficulty_level to alpha
+        self.current_difficulty_level += 1
+        logger.info(f"📈 Difficulty increased to level {self.current_difficulty_level}")
+        return True
+
+    """ def increase_curriculum_difficulty(self) -> bool:
+        
         if not self.curriculum_sampling_enabled:
             return False
         if self.current_difficulty_level < (self.max_difficulty_level): ### Ignore extreme cases
             self.current_difficulty_level += 1
-            logger.info(f"📈 Difficulty increased to level {self.current_difficulty_level}")
+            logger.info(f"📈 Difficulty increased to level {self.current_difficulty_level}, step penalty: {self.reward_neg}")
             return True
         logger.info("🔒 Already at maximum difficulty level.")
-        return False
+        return False """
     def reset(
         self,
         qc: Path | str | QuantumCircuit | None = None,
@@ -305,16 +357,17 @@ class PredictorEnv(Env):  # type: ignore[misc]
         """
         super().reset(seed=seed)
         if self.curriculum_sampling_enabled and self.curriculum_df is not None:
-            level_label = self.curriculum_bins[self.current_difficulty_level]
-            df_filtered = self.curriculum_df[self.curriculum_df["complexity_bin"] == level_label]
+            # level_label = self.curriculum_bins[self.current_difficulty_level]
+            # df_filtered = self.curriculum_df[self.curriculum_df["complexity_bin"] == level_label]
             
-            logger.info(f"📚 Curriculum sampling enabled. Current difficulty level: {self.current_difficulty_level} ({level_label})")
-            logger.info(f"🧪 Sampling from {len(df_filtered)} circuits at this level.")
+            # logger.info(f"📚 Curriculum sampling enabled. Current difficulty level: {self.current_difficulty_level} ({level_label})")
+            # logger.info(f"🧪 Sampling from {len(df_filtered)} circuits at this level.")
             
-            if df_filtered.empty:
-                raise ValueError(f"No circuits available for difficulty level '{level_label}'.")
+            # if df_filtered.empty:
+            #     raise ValueError(f"No circuits available for difficulty level '{level_label}'.")
 
-            sampled_file = random.choice(df_filtered["file"].tolist())
+            # sampled_file = random.choice(df_filtered["file"].tolist())
+            sampled_file = self.sample_circuit_by_curriculum_bin()
             logger.info(f"🎯 Sampled circuit: {sampled_file}")
             self.state = QuantumCircuit.from_qasm_file(sampled_file)
             self.filename = sampled_file
@@ -333,6 +386,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
         self.used_actions = []
 
         self.layout = None
+        self.best_fidelity_so_far = None
 
         self.valid_actions = self.actions_opt_indices + self.actions_synthesis_indices
 
@@ -368,8 +422,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
             ]
         return action_mask
 
-    def apply_action(self, action_index: int) -> QuantumCircuit | None:
-        """Applies the given action to the current state and returns the altered state."""
+    """ def apply_action(self, action_index: int) -> QuantumCircuit | None:
+        #Applies the given action to the current state and returns the altered state.
 
         if action_index not in self.action_set:
             raise ValueError(f"Action {action_index} not supported.")
@@ -384,8 +438,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
             # ---- QISKIT / QISKIT_AI PATH ----
             if action["origin"] in {"qiskit", "qiskit_ai"}:
                 # Remove cregs if AIRouting is in the action name (composite or not)
-                if "AIRouting" in action["name"]:
-                    self.state = self.remove_cregs(self.state)
+                # if "AIRouting" in action["name"]:
+                #     self.state = self.remove_cregs(self.state)
 
                 pm = None
                 altered_qc = None
@@ -421,11 +475,11 @@ class PredictorEnv(Env):  # type: ignore[misc]
                     # Optimization passes don't update layout!
 
                 # ----- Mapping/Composite actions -----
-                elif action_index in self.actions_mapping_indices:
+                elif action_index in self.actions_mapping_indices or action_index in self.actions_final_optimization_indices:
                     # Stochastic actions
                     if action.get("stochastic", False):
                         altered_qc, prop = rl.helper.best_of_n_passmanager(
-                            action["transpile_pass"], self.device, self.state, n_attempts=10
+                            action["transpile_pass"], self.device, self.state, n_attempts=20
                         )
                     else:
                         transpile_pass = (
@@ -434,17 +488,6 @@ class PredictorEnv(Env):  # type: ignore[misc]
                         )
                         pm = PassManager(transpile_pass)
                         altered_qc = pm.run(self.state)
-                        prop = pm.property_set
-
-                    # Handle layout for composite mapping actions
-                    if prop.get("layout"):
-                        self.layout = TranspileLayout(
-                            initial_layout=prop["layout"],
-                            input_qubit_mapping=prop["original_qubit_indices"],
-                            final_layout=prop["final_layout"],
-                            _output_qubit_list=altered_qc.qubits,
-                            _input_qubit_count=self.num_qubits_uncompiled_circuit,
-                        )
 
                 # ----- Synthesis actions -----
                 elif action_index in self.actions_synthesis_indices:
@@ -518,22 +561,57 @@ class PredictorEnv(Env):  # type: ignore[misc]
             self.error_occurred = True
             return None
 
-        return altered_qc
-    """ def apply_action(self, action_index: int) -> QuantumCircuit | None:
-        #Applies the given action to the current state and returns the altered state.
-        if action_index in self.action_set:
-            action = self.action_set[action_index]
-            if action["name"] == "terminate":
-                return self.state
-            if action_index in self.actions_opt_indices:
-                transpile_pass = action["transpile_pass"]
-                if callable(transpile_pass) and action["name"] not in {"QiskitO3", "Opt2qBlocks", "Optimize1qGatesDecomposition", "BQSKitO2", "AIClifford"}:
-                    transpile_pass = transpile_pass(self.device)
-            else:
-                transpile_pass = action["transpile_pass"](self.device)
+        return altered_qc """
+    
+    def apply_action(self, action_index: int) -> QuantumCircuit | None:
+        # Applies the given action to the current state and returns the altered state.
+        if action_index not in self.action_set:
+            error_msg = f"Action {action_index} not supported."
+            raise ValueError(error_msg)
 
-            if action["origin"] in {"qiskit", "qiskit_ai"}:
-                try:
+        action = self.action_set[action_index]
+
+        # 1. Terminate action returns current state
+        if action["name"] == "terminate":
+            return self.state
+
+        # 2. Get the transpile_pass, expand callables as needed
+        if action_index in self.actions_opt_indices:
+            transpile_pass = action["transpile_pass"]
+            if callable(transpile_pass) and action["name"] not in {
+                "QiskitO3", "Opt2qBlocks", "Optimize1qGatesDecomposition", "BQSKitO2", "AIClifford"
+            }:
+                transpile_pass = transpile_pass(self.device)
+        else:
+            transpile_pass = action["transpile_pass"](self.device)
+
+        altered_qc = None
+        pm_property_set = None
+
+        # --- QISKIT/QISKIT_AI actions (includes AIRouting/SabreMapping) ---
+        if action["origin"] in {"qiskit", "qiskit_ai"}:
+            try:
+                # 3. Stochastic actions: best-of-n search
+                if action.get("stochastic", False):
+                    metric_fn = lambda circ: circ.count_ops().get("swap", 0)
+                    max_iteration = 30
+                    if action["name"] in {"SabreLayout", "SabreMapping"}:
+                        # Use single PassManager with many internal trials
+                        transpile_pass = action["transpile_pass"](self.device, max_iteration)
+                        pm = PassManager(transpile_pass)
+                        altered_qc = pm.run(self.state)
+                        pm_property_set = dict(pm.property_set)
+                    elif action["name"] == "AIRouting":
+                        # Run AIRouting best-of-n
+                        altered_qc, pm_property_set = rl.helper.best_of_n_passmanager(
+                            action, 
+                            self.device,
+                            self.state, 
+                            max_iteration=max_iteration,
+                            metric_fn=metric_fn,
+                        )
+                else:
+                    # 4. Deterministic: build PassManager, run once
                     if action["name"] == "QiskitO3":
                         pm = PassManager()
                         pm.append(
@@ -545,118 +623,123 @@ class PredictorEnv(Env):  # type: ignore[misc]
                                 do_while=action["do_while"],
                             ),
                         )
+                        altered_qc = pm.run(self.state)
+                        pm_property_set = dict(pm.property_set)
                     elif action["name"] in ["Opt2qBlocks", "Optimize1qGatesDecomposition"]:
-                        pm = PassManager(
-                            action["transpile_pass"](self.device.basis_gates)
-                        )
+                        pm = PassManager(action["transpile_pass"](self.device.basis_gates))
+                        altered_qc = pm.run(self.state)
+                        pm_property_set = dict(pm.property_set)
                     elif action["name"] == "AIClifford":
-                        pm = PassManager(
-                            action["transpile_pass"](CouplingMap(self.device.coupling_map))
-                        )
+                        try:
+                            pm = PassManager(action["transpile_pass"](CouplingMap(self.device.coupling_map)))
+                            altered_qc = pm.run(self.state)
+                            pm_property_set = dict(pm.property_set)
+                            logger.info("AIClifford succeeded")
+                        except Exception as e:
+                            logger.warning(f"AIClifford failed: {e}, falling back to OptimizeCliffords.")
+                            from qiskit.transpiler.passes import OptimizeCliffords
+                            pm = PassManager([OptimizeCliffords()])
+                            altered_qc = pm.run(self.state)
+                            pm_property_set = dict(pm.property_set)
                     else:
-                        pm = PassManager(transpile_pass)  
-                    if action["name"] == "AIRouting":
-                        self.state = self.remove_cregs(self.state)
-                    altered_qc = pm.run(self.state)
-                    
-                except Exception:
-                    logger.exception(
-                        "Error in executing Qiskit transpile pass for {action} at step {i} for {filename}".format(
-                            action=action["name"], i=self.num_steps, filename=self.filename
-                        )
+                        pm = PassManager(transpile_pass)
+                        altered_qc = pm.run(self.state)
+                        pm_property_set = dict(pm.property_set)
+            except Exception:
+                logger.exception(
+                    f"Error in executing Qiskit transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
+                )
+                self.error_occurred = True
+                return None
+
+            # --- 5. Bookkeeping: update layout/final_layout as needed ---
+            if action_index in (
+                self.actions_layout_indices
+                + self.actions_mapping_indices
+                + self.actions_final_optimization_indices
+            ):
+                if action["name"] == "VF2PostLayout":
+                    assert pm_property_set.get("VF2PostLayout_stop_reason") is not None
+                    post_layout = pm_property_set.get("post_layout")
+                    if post_layout:
+                        altered_qc, _ = rl.helper.postprocess_vf2postlayout(altered_qc, post_layout, self.layout)
+                elif action["name"] == "VF2Layout":
+                    if pm_property_set.get("VF2Layout_stop_reason") == VF2LayoutStopReason.SOLUTION_FOUND:
+                        assert pm_property_set.get("layout")
+                else:
+                    assert pm_property_set.get("layout", None)
+
+                # Update self.layout (if present)
+                if pm_property_set.get("layout", None):
+                    self.layout = TranspileLayout(
+                        initial_layout=pm_property_set["layout"],
+                        input_qubit_mapping=pm_property_set.get("original_qubit_indices"),
+                        final_layout=pm_property_set.get("final_layout"),
+                        _output_qubit_list=altered_qc.qubits,
+                        _input_qubit_count=self.num_qubits_uncompiled_circuit,
                     )
 
-                    self.error_occurred = True
-                    return None
-                if (
-                    action_index
-                    in self.actions_layout_indices
-                    + self.actions_mapping_indices
-                    + self.actions_final_optimization_indices
-                ):
-                    if action["name"] == "VF2PostLayout":
-                        assert pm.property_set["VF2PostLayout_stop_reason"] is not None
-                        post_layout = pm.property_set["post_layout"]
-                        if post_layout:
-                            altered_qc, pm = rl.helper.postprocess_vf2postlayout(altered_qc, post_layout, self.layout)
-                    elif action["name"] == "VF2Layout":
-                        if pm.property_set["VF2Layout_stop_reason"] == VF2LayoutStopReason.SOLUTION_FOUND:
-                            assert pm.property_set["layout"]
-                    else:
-                        assert pm.property_set["layout"]
+            elif action_index in self.actions_routing_indices:
+                # If routing, update just the final_layout
+                if hasattr(self, "layout") and self.layout is not None:
+                    self.layout.final_layout = pm_property_set.get("final_layout")
 
-                    if pm.property_set["layout"]:
-                        self.layout = TranspileLayout(
-                            initial_layout=pm.property_set["layout"],
-                            input_qubit_mapping=pm.property_set["original_qubit_indices"],
-                            final_layout=pm.property_set["final_layout"],
-                            _output_qubit_list=altered_qc.qubits,
-                            _input_qubit_count=self.num_qubits_uncompiled_circuit,
-                        )
-
-                elif action_index in self.actions_routing_indices:
+        elif action["origin"] == "tket":
+            # -------------- TKET PATH --------------
+            try:
+                if any(isinstance(gate[0], RCCXGate) for gate in self.state.data):
+                    self.state = self.state.decompose()
+                tket_qc = qiskit_to_tk(self.state, preserve_param_uuid=True)
+                transpile_pass = (
+                    action["transpile_pass"](self.device)
+                    if callable(action["transpile_pass"]) else action["transpile_pass"]
+                )
+                for elem in transpile_pass:
+                    elem.apply(tket_qc)
+                qbs = tket_qc.qubits
+                qubit_map = {qbs[i]: Qubit("q", i) for i in range(len(qbs))}
+                tket_qc.rename_units(qubit_map)
+                altered_qc = tk_to_qiskit(tket_qc, replace_implicit_swaps=True)
+                if action_index in self.actions_routing_indices:
                     assert self.layout is not None
-                    self.layout.final_layout = pm.property_set["final_layout"]
+                    self.layout.final_layout = rl.helper.final_layout_pytket_to_qiskit(tket_qc, altered_qc)
+            except Exception:
+                logger.exception(
+                    f"Error in executing TKET transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
+                )
+                self.error_occurred = True
+                return None
 
-            elif action["origin"] == "tket":
-                try:
-                    if any(isinstance(gate[0], RCCXGate) for gate in self.state.data):
-                        self.state = self.state.decompose()
-                    tket_qc = qiskit_to_tk(self.state, preserve_param_uuid=True)
-                    for elem in transpile_pass:
-                        elem.apply(tket_qc)
-                    qbs = tket_qc.qubits
-                    qubit_map = {qbs[i]: Qubit("q", i) for i in range(len(qbs))}
-                    tket_qc.rename_units(qubit_map)  # type: ignore[arg-type]
-                    #altered_qc = tk_to_qiskit(tket_qc)
-                    altered_qc = tk_to_qiskit(tket_qc, replace_implicit_swaps=True)
-                    if action_index in self.actions_routing_indices:
-                        assert self.layout is not None
-                        self.layout.final_layout = rl.helper.final_layout_pytket_to_qiskit(tket_qc, altered_qc)
-
-                except Exception:
-                    logger.exception(
-                        "Error in executing TKET transpile  pass for {action} at step {i} for {filename}".format(
-                            action=action["name"], i=self.num_steps, filename=self.filename
-                        )
+        elif action["origin"] == "bqskit":
+            try:
+                bqskit_qc = qiskit_to_bqskit(self.state)
+                if action_index in self.actions_opt_indices + self.actions_synthesis_indices:
+                    bqskit_compiled_qc = transpile_pass(bqskit_qc)
+                    altered_qc = bqskit_to_qiskit(bqskit_compiled_qc)
+                elif action_index in self.actions_mapping_indices:
+                    bqskit_compiled_qc, initial_layout, final_layout = transpile_pass(bqskit_qc)
+                    altered_qc = bqskit_to_qiskit(bqskit_compiled_qc)
+                    layout = rl.helper.final_layout_bqskit_to_qiskit(
+                        initial_layout, final_layout, altered_qc, self.state
                     )
-                    self.error_occurred = True
-                    return None
-
-            elif action["origin"] == "bqskit":
-                try:
-                    bqskit_qc = qiskit_to_bqskit(self.state)
-                    if action_index in self.actions_opt_indices + self.actions_synthesis_indices:
-                        bqskit_compiled_qc = transpile_pass(bqskit_qc)
-                        altered_qc = bqskit_to_qiskit(bqskit_compiled_qc)
-                    elif action_index in self.actions_mapping_indices:
-                        bqskit_compiled_qc, initial_layout, final_layout = transpile_pass(bqskit_qc)
-                        altered_qc = bqskit_to_qiskit(bqskit_compiled_qc)
-                        layout = rl.helper.final_layout_bqskit_to_qiskit(
-                            initial_layout, final_layout, altered_qc, self.state
-                        )
-                        self.layout = layout
-                except Exception:
-                    logger.exception(
-                        "Error in executing BQSKit transpile pass for {action} at step {i} for {filename}".format(
-                            action=action["name"], i=self.num_steps, filename=self.filename
-                        )
+                    self.layout = layout
+            except Exception:
+                logger.exception(
+                    "Error in executing BQSKit transpile pass for {action} at step {i} for {filename}".format(
+                        action=action["name"], i=self.num_steps, filename=self.filename
                     )
-                    self.error_occurred = True
-                    return None
-
-            else:
-                error_msg = f"Origin {action['origin']} not supported."
-                raise ValueError(error_msg)
+                )
+                self.error_occurred = True
+                return None
 
         else:
-            error_msg = f"Action {action_index} not supported."
+            error_msg = f"Origin {action['origin']} not supported."
             raise ValueError(error_msg)
 
-        return altered_qc """
+        return altered_qc
 
-    def determine_valid_actions_for_state(self) -> list[int]:
-        """Determines and returns the valid mapping (layout+routing) actions for the current state."""
+    """ def determine_valid_actions_for_state(self) -> list[int]:
+        # Determines and returns the valid mapping (layout+routing) actions for the current state.
         check_nat_gates = GatesInBasis(basis_gates=self.device.basis_gates)
         check_nat_gates(self.state)
         only_nat_gates = check_nat_gates.property_set["all_gates_in_basis"]
@@ -664,7 +747,6 @@ class PredictorEnv(Env):  # type: ignore[misc]
         if not only_nat_gates:
             return self.actions_synthesis_indices + self.actions_opt_indices
             
-
         check_mapping = CheckMap(coupling_map=CouplingMap(self.device.coupling_map))
         check_mapping(self.state)
         mapped = check_mapping.property_set["is_swap_mapped"]
@@ -672,26 +754,29 @@ class PredictorEnv(Env):  # type: ignore[misc]
         if mapped:
             if self.num_steps > 50:
                 return [self.action_terminate_index]
-            return [self.action_terminate_index, *self.actions_opt_indices, *self.actions_final_optimization_indices]
+            return [self.action_terminate_index, *self.actions_opt_indices]
 
         # If not mapped, expose only mapping actions
-        return self.actions_mapping_indices + self.actions_opt_indices
+        return self.actions_mapping_indices + self.actions_opt_indices """
 
-    """ def determine_valid_actions_for_state(self) -> list[int]:
+    def determine_valid_actions_for_state(self) -> list[int]:
         #Determines and returns the valid actions for the current state.
         check_nat_gates = GatesInBasis(basis_gates=self.device.basis_gates)
         check_nat_gates(self.state)
         only_nat_gates = check_nat_gates.property_set["all_gates_in_basis"]
 
-        if not only_nat_gates:
-            actions = self.actions_synthesis_indices + self.actions_opt_indices
-            if self.layout is not None:
-                actions += self.actions_routing_indices
-            return actions
-
         check_mapping = CheckMap(coupling_map=CouplingMap(self.device.coupling_map))
         check_mapping(self.state)
         mapped = check_mapping.property_set["is_swap_mapped"]
+
+        if not only_nat_gates:
+            actions = self.actions_synthesis_indices + self.actions_opt_indices
+            
+            if not mapped:
+                actions += self.actions_mapping_indices
+                if self.layout is not None:
+                    actions += self.actions_routing_indices
+            return actions
 
         if mapped and self.layout is not None:  # The circuit is correctly mapped.
             if self.num_steps > 50:
@@ -699,10 +784,10 @@ class PredictorEnv(Env):  # type: ignore[misc]
             return [self.action_terminate_index, *self.actions_opt_indices, *self.actions_final_optimization_indices]
 
         if self.layout is not None:  # The circuit is not yet mapped but a layout is set.
-            return self.actions_routing_indices
+            return self.actions_routing_indices + self.actions_mapping_indices
 
         # No layout applied yet
-        return self.actions_mapping_indices + self.actions_layout_indices + self.actions_opt_indices """
+        return self.actions_mapping_indices + self.actions_layout_indices + self.actions_opt_indices
     
     def export_action_effectiveness(self, path="action_effectiveness.json"):
         """Export the success/failure count of actions to a JSON file."""
@@ -719,16 +804,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
                 if prev[key] != curr[key]:
                     return True
         return False
-    def remove_cregs(self, qc: QuantumCircuit) -> QuantumCircuit:
-        new_qc = QuantumCircuit(qc.num_qubits, name=qc.name)
     
-        for instr, qargs, cargs in qc.data:
-            # If there are no classical arguments, keep the instruction
-            if not cargs:
-                new_qc.append(instr, qargs)
-            # (Optionally: if you want to keep barriers or certain instrs that don't use cregs, adjust logic here)
-
-        return new_qc
 
 
 

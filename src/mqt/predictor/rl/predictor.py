@@ -366,6 +366,7 @@ class ActionEffectivenessEarlyStoppingCallback(BaseCallback):
         self.stop_training_now = False
         self.episode_rewards = []  
         self.final_step_rewards = []
+        self.final_step_rewards_all = []
 
     def _on_step(self) -> bool:
         # Collect episode rewards as they finish
@@ -405,6 +406,7 @@ class ActionEffectivenessEarlyStoppingCallback(BaseCallback):
             return
 
         mean_final_step = sum(self.final_step_rewards) / len(self.final_step_rewards)
+        self.final_step_rewards_all.append(mean_final_step) 
 
         if self.verbose:
             avg_reward = sum(self.episode_rewards) / len(self.episode_rewards) if self.episode_rewards else None
@@ -437,13 +439,12 @@ class ActionEffectivenessEarlyStoppingCallback(BaseCallback):
         with open(csv_path, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(["final_step_reward"])
-            for r in self.final_step_rewards:
+            for r in self.final_step_rewards_all:   # CHANGE THIS LINE
                 writer.writerow([r])
         if self.verbose:
             logger.info(f"[ActionStats] Training ended. Best mean reward: {self.best_mean_reward:.4f}")
 
     
-
 class Predictor:
     """The Predictor class is used to train a reinforcement learning model for a given figure of merit and device such that it acts as a compiler."""
 
@@ -458,53 +459,53 @@ class Predictor:
         logger.setLevel(logger_level)
 
         self.env = rl.PredictorEnv(reward_function=figure_of_merit, device_name=device_name, reward_neg=reward_neg,
-            reward_pos=reward_pos)
+            reward_pos=reward_pos, curriculum=use_curriculum)
         if use_curriculum:
             df_curriculum = pd.read_csv(curriculum_df_path)
             self.env.set_curriculum_data(df_curriculum, enable_sampling=True)
         self.device_name = device_name
         self.figure_of_merit = figure_of_merit
 
-    # def compile_as_predicted(
-    #     self,
-    #     qc: QuantumCircuit,
-    #     file_name: str,
-    # ) -> tuple[QuantumCircuit, list[str]]:
-    #     """Compiles a given quantum circuit such that the given figure of merit is maximized by using the respectively trained optimized compiler.
+    """ def compile_as_predicted(
+        self,
+        qc: QuantumCircuit,
+        file_name: str,
+    ) -> tuple[QuantumCircuit, list[str]]:
+        # Compiles a given quantum circuit such that the given figure of merit is maximized by using the respectively trained optimized compiler.
 
-    #     Arguments:
-    #         qc: The quantum circuit to be compiled or the path to a qasm file containing the quantum circuit.
+        # Arguments:
+        #     qc: The quantum circuit to be compiled or the path to a qasm file containing the quantum circuit.
 
-    #     Returns:
-    #         A tuple containing the compiled quantum circuit and the compilation information. If compilation fails, False is returned.
-    #     """
-    #     folder = rl.helper.get_path_trained_model()
-    #     model_path = folder / file_name
+        # Returns:
+        #     A tuple containing the compiled quantum circuit and the compilation information. If compilation fails, False is returned.
+       
+        folder = rl.helper.get_path_trained_model()
+        model_path = folder / file_name
 
-    #     #trained_rl_model = rl.helper.load_model("model_" + self.figure_of_merit + "_" + self.device_name)
-    #     trained_rl_model = rl.helper.load_model(str(model_path))
+        #trained_rl_model = rl.helper.load_model("model_" + self.figure_of_merit + "_" + self.device_name)
+        trained_rl_model = rl.helper.load_model(str(model_path))
 
-    #     obs, _ = self.env.reset(qc, seed=0)
+        obs, _ = self.env.reset(qc, seed=0)
 
-    #     used_compilation_passes = []
-    #     terminated = False
-    #     truncated = False
+        used_compilation_passes = []
+        terminated = False
+        truncated = False
 
-    #     step_count = 0  
-    #     while not (terminated or truncated) and step_count < 100:
-    #         action_masks = get_action_masks(self.env)
-    #         action, _ = trained_rl_model.predict(obs, action_masks=action_masks)
-    #         action = int(action)
-    #         action_item = self.env.action_set[action]
-    #         used_compilation_passes.append(action_item["name"])
-    #         obs, _reward_val, terminated, truncated, _info = self.env.step(action)
-    #         step_count += 1
+        step_count = 0  
+        while not (terminated or truncated) and step_count < 100:
+            action_masks = get_action_masks(self.env)
+            action, _ = trained_rl_model.predict(obs, action_masks=action_masks)
+            action = int(action)
+            action_item = self.env.action_set[action]
+            used_compilation_passes.append(action_item["name"])
+            obs, _reward_val, terminated, truncated, _info = self.env.step(action)
+            step_count += 1
 
-    #     if not self.env.error_occurred:
-    #         return self.env.state, _reward_val, used_compilation_passes
+        if not self.env.error_occurred:
+            return self.env.state, _reward_val, used_compilation_passes
 
-    #     msg = "Error occurred during compilation."
-    #     raise RuntimeError(msg)
+        msg = "Error occurred during compilation."
+        raise RuntimeError(msg) """
     def compile_as_predicted(
         self,
         qc: QuantumCircuit,
@@ -558,11 +559,6 @@ class Predictor:
                         blocked_actions.add(cyc_action)
                     break
 
-            # If the same action is used consecutively, block it to avoid an infinite loop
-            """ if len(recent_actions) >= 3 and all(a == action for a in list(recent_actions)[-3:]):
-                print("Avoiding infinite loop")
-                blocked_actions.add(action) """
-
             action_item = self.env.action_set[action]
             used_compilation_passes.append(action_item["name"])
             obs, _reward_val, terminated, truncated, _info = self.env.step(action)
@@ -573,49 +569,6 @@ class Predictor:
 
         msg = "Error occurred during compilation."
         raise RuntimeError(msg)
-    
-    """def compile_as_predicted(
-        self,
-        qc: QuantumCircuit,
-        file_name: str,
-    ) -> tuple[QuantumCircuit, float, list[str]]:
-        folder = rl.helper.get_path_trained_model()
-        model_path = folder / file_name
-        trained_rl_model = rl.helper.load_model(str(model_path))
-
-        obs, _ = self.env.reset(qc, seed=0)
-
-        used_compilation_passes = []
-        terminated = False
-        truncated = False
-
-        step_count = 0
-        max_steps = 100
-        recent_actions = deque(maxlen=5)
-        deterministic_mode = True
-
-        while not (terminated or truncated) and step_count < max_steps:
-            action_masks = get_action_masks(self.env)
-            action, _ = trained_rl_model.predict(obs, action_masks=action_masks, deterministic=deterministic_mode)
-            action = int(action)
-
-            recent_actions.append(action)
-
-            # Detect infinite loop of same action
-            if len(recent_actions) >= 2 and all(a == action for a in list(recent_actions)[-2:]):
-                if deterministic_mode:
-                    print("⚠️ Detected loop — switching to stochastic mode")
-                    deterministic_mode = False
-
-            action_item = self.env.action_set[action]
-            used_compilation_passes.append(action_item["name"])
-            obs, _reward_val, terminated, truncated, _info = self.env.step(action)
-            step_count += 1
-
-        if not self.env.error_occurred:
-            return self.env.state, _reward_val, used_compilation_passes
-
-        raise RuntimeError("Error occurred during compilation.") """
 
     def train_model(
         self,
@@ -674,7 +627,6 @@ class Predictor:
         os.makedirs(f"./checkpoints/{save_name}", exist_ok=True)
 
         callback = None
-        #callback = ActionEffectivenessCallback(env=self.env,save_dir=f"./checkpoints/{save_name}/action_logs", verbose=1)
         callback = ActionEffectivenessEarlyStoppingCallback(
             env=self.env,
             save_dir=f"./checkpoints/{save_name}/action_logs",          
@@ -683,7 +635,6 @@ class Predictor:
             verbose=1
         )
         if curriculum:
-            #callback = CurriculumProgressionCallback(env=self.env, threshold=0.3, check_freq=50, save_dir=rl.helper.get_path_trained_model() / save_name)
             callback = SaturationCurriculumCallback(env=self.env, check_freq=50, save_dir=rl.helper.get_path_trained_model() / save_name, save_best_checkpoint=True)
         tb_log_name = "ppo"
         log_path = os.path.join(log_dir, save_name,"ppo") 

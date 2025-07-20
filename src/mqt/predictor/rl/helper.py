@@ -24,6 +24,8 @@ from qiskit import QuantumCircuit
 from qiskit.circuit.equivalence_library import StandardEquivalenceLibrary
 from qiskit.circuit.library import XGate, YGate, ZGate, CXGate, CYGate, CZGate, HGate, TGate, TdgGate, SdgGate, SGate, SwapGate
 from qiskit.transpiler import CouplingMap, Layout, PassManager, TranspileLayout
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.transpiler.passes import (
     ApplyLayout,
     BasicSwap,
@@ -127,9 +129,9 @@ def qcompile(
 def get_actions_opt() -> list[dict[str, Any]]:
     """Returns a list of dictionaries containing information about the optimization passes that are available."""
     return [
-        {
+        {   # specify a basis to avoid qiskit fallback to generic UGate
             "name": "Optimize1qGatesDecomposition",
-            "transpile_pass": lambda native_gate: [Optimize1qGatesDecomposition(basis=native_gate)],
+            "transpile_pass": lambda native_gate: [Optimize1qGatesDecomposition(basis=native_gate)],  
             "origin": "qiskit",
         },
         {
@@ -147,8 +149,8 @@ def get_actions_opt() -> list[dict[str, Any]]:
             "transpile_pass": [RemoveDiagonalGatesBeforeMeasure()],
             "origin": "qiskit",
         },
-        {
-            "name": "InverseCancellation",
+        {   # Add more gate options to cancel
+            "name": "InverseCancellation", 
             "transpile_pass": [InverseCancellation([
                 XGate(), YGate(), ZGate(),         
                 HGate(),                      
@@ -158,19 +160,19 @@ def get_actions_opt() -> list[dict[str, Any]]:
             ])],
             "origin": "qiskit",
         },
-        {
+        {   # Fix: OptimizeCliffords only work after CollectCliffords
             "name": "OptimizeCliffords",
             "transpile_pass": [CollectCliffords(), OptimizeCliffords()],
             "origin": "qiskit",
         },
-        # {
-        #     "name": "AIClifford",
-        #     "transpile_pass": lambda coupling_map: [
-        #         CollectCliffords(),
-        #         AICliffordSynthesis(coupling_map=coupling_map)
-        #     ],
-        #     "origin": "qiskit_ai"
-        # },
+        {
+            "name": "AIClifford",
+            "transpile_pass": lambda coupling_map: [
+                CollectCliffords(),
+                AICliffordSynthesis(coupling_map=coupling_map)
+            ],
+            "origin": "qiskit_ai"
+        },
         # Very restricted usecase and underperforms AIClifford
         # {   "name": "AILinearFunction", 
         #     "transpile_pass": [CollectLinearFunctions(), AILinearFunctionSynthesis()],
@@ -182,7 +184,7 @@ def get_actions_opt() -> list[dict[str, Any]]:
         #     "transpile_pass": [CollectPermutations(), AIPermutationSynthesis()],
         #     "origin": "qiskit_ai"
         # },
-        {
+        {   # specify a basis to avoid qiskit fallback to generic UGate
             "name": "Opt2qBlocks",
             "transpile_pass": lambda native_gate: [Collect2qBlocks(), ConsolidateBlocks(basis_gates=native_gate)],
             "origin": "qiskit",
@@ -243,21 +245,6 @@ def get_actions_opt() -> list[dict[str, Any]]:
         #         seed=10,
         #     ), 
         #     "origin": "bqskit",     
-        # },
-        # {
-        #     "name": "AICliffordSynthesis",
-        #     "transpile_pass": lambda device: [AICliffordSynthesis(coupling_map=device.coupling_map)],
-        #     "origin": "qiskit_ai",
-        # },
-        # {
-        #     "name": "AILinearFunctionSynthesis",
-        #     "transpile_pass": lambda device: [AILinearFunctionSynthesis(coupling_map=device.coupling_map)],
-        #     "origin": "qiskit_ai",
-        # },
-        # {
-        #     "name": "AIPermutationSynthesis",
-        #     "transpile_pass": lambda device: [AIPermutationSynthesis(coupling_map=device.coupling_map)],
-        #     "origin": "qiskit_ai",
         # },
     ]
 
@@ -320,16 +307,19 @@ def get_actions_layout() -> list[dict[str, Any]]:
 
         {
             "name": "SabreLayout",
-            "transpile_pass": lambda device: [
+            "transpile_pass": lambda device, max_iteration=20: [
                 SabreLayout(
-                    coupling_map=CouplingMap(device.coupling_map),
-                    skip_routing=True,        
+                    coupling_map=CouplingMap(device.coupling_map), 
+                    skip_routing=True,
+                    layout_trials=max_iteration * os.cpu_count(), # by default SabreLayout is applied #cpus amount of times 
+                    swap_trials=max_iteration * os.cpu_count(),
                 ),
                 FullAncillaAllocation(coupling_map=CouplingMap(device.coupling_map)),
                 EnlargeWithAncilla(),
                 ApplyLayout(),
             ],
             "origin": "qiskit",
+            "stochastic": True,
         },
     ]
 
@@ -342,20 +332,12 @@ def get_actions_routing() -> list[dict[str, Any]]:
             "transpile_pass": lambda device: [BasicSwap(coupling_map=CouplingMap(device.coupling_map))],
             "origin": "qiskit",
         },
-
-        # {
-        #     "name": "LookaheadSwap",
-        #     "transpile_pass": lambda device: [LookaheadSwap(coupling_map=CouplingMap(device.coupling_map))],
-        #     "origin": "qiskit",
-        # }
-
         {
             "name": "SabreSwap",
             "transpile_pass": lambda device: [SabreSwap(coupling_map=CouplingMap(device.coupling_map), 
                                                         heuristic="decay")],
             "origin": "qiskit",
         },
-
         {
             "name": "RoutingPass",
             "transpile_pass": lambda device: [
@@ -366,94 +348,56 @@ def get_actions_routing() -> list[dict[str, Any]]:
         },
         {
             "name": "AIRouting",
-            "transpile_pass": lambda device: [AIRouting(
-                coupling_map=device.coupling_map,
-                optimization_level=2,
-                layout_mode="optimize",
-                local_mode=True
-            )],
+            "transpile_pass": lambda device: [
+                SafeAIRouting(
+                    coupling_map=device.coupling_map,
+                    optimization_level=3,
+                    layout_mode="optimize",
+                    local_mode=True
+                )
+            ],
             "origin": "qiskit_ai",
+            "stochastic": True,  
         },
 
     ]
 
 
 def get_actions_mapping() -> list[dict[str, Any]]:
-    """Returns a list of dictionaries containing information about the mapping passes that are available."""
-    # get layout/routing pass constructors
-    layouts = {a["name"]: a["transpile_pass"] for a in get_actions_layout()}
-    routings = {a["name"]: a["transpile_pass"] for a in get_actions_routing()}
-
-    # Define composite mapping actions
-    stochastic = [
-        ("VF2Layout", "SabreSwap"),
-        ("VF2Layout", "AIRouting"),
-        ("DenseLayout", "SabreSwap"),
-        ("DenseLayout", "AIRouting"),
-        ("TrivialLayout", "SabreSwap"),
-        ("TrivialLayout", "AIRouting"),
-        ("SabreLayout", "AIRouting"),
-    ]
-
-    deterministic = [
-        ("TrivialLayout", "BasicSwap"),
-        ("DenseLayout", "BasicSwap"),
-    ]
-
-    stochastic_actions = [
+    
+    return [
         {
-            "name": f"{layout}+{routing}",
-            "transpile_pass": composite_mapping_pass(layouts[layout], routings[routing]),
-            "origin": "qiskit",
-            "stochastic": True,  
-        }
-        for layout, routing in stochastic
-    ]
-
-    deterinistic_actions = [
-        {
-            "name": f"{layout}+{routing}",
-            "transpile_pass": composite_mapping_pass(layouts[layout], routings[routing]),
-            "origin": "qiskit",
-            "stochastic": False,  
-        }
-        for layout, routing in deterministic
-    ]
-    sabre_mapping_action = {
             "name": "SabreMapping",
-            "transpile_pass": lambda device: [
-                SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=False),
+            "transpile_pass": lambda device, max_iteration=20: [
+                SabreLayout(
+                    coupling_map=CouplingMap(device.coupling_map), 
+                    skip_routing=False,
+                    layout_trials=max_iteration * os.cpu_count(),
+                    swap_trials=max_iteration * os.cpu_count(),
+                ),
             ],
             "origin": "qiskit",
-        }
-    return [sabre_mapping_action] + stochastic_actions + deterinistic_actions
-    
-    # return [
-    #     {
-    #         "name": "SabreMapping",
-    #         "transpile_pass": lambda device: [
-    #             SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=False),
-    #         ],
-    #         "origin": "qiskit",
-    #     },
-    # {
-    #     "name": "BQSKitMapping",
-    #     "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
-    #         bqskit_circuit,
-    #         model=MachineModel(
-    #             num_qudits=device.num_qubits,
-    #             gate_set=get_bqskit_native_gates(device),
-    #             coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
-    #         ),
-    #         with_mapping=True,
-    #         optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
-    #         #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
-    #         synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
-    #         max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
-    #         seed=10,
-    #     ),
-    #     "origin": "bqskit",
-    # },
+            "stochastic": True,
+        },
+        # {
+        #     "name": "BQSKitMapping",
+        #     "transpile_pass": lambda device: lambda bqskit_circuit: bqskit_compile(
+        #         bqskit_circuit,
+        #         model=MachineModel(
+        #             num_qudits=device.num_qubits,
+        #             gate_set=get_bqskit_native_gates(device),
+        #             coupling_graph=[(elem[0], elem[1]) for elem in device.coupling_map],
+        #         ),
+        #         with_mapping=True,
+        #         optimization_level=1 if os.getenv("GITHUB_ACTIONS") == "true" else 2,
+        #         #synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-8,
+        #         synthesis_epsilon=1e-1 if os.getenv("GITHUB_ACTIONS") == "true" else 1e-4,
+        #         max_synthesis_size=2 if os.getenv("GITHUB_ACTIONS") == "true" else 3,
+        #         seed=10,
+        #     ),
+        #     "origin": "bqskit",
+        # },
+    ]
 
 
 def get_actions_synthesis() -> list[dict[str, Any]]:
@@ -487,27 +431,65 @@ def get_action_terminate() -> dict[str, Any]:
     """Returns a dictionary containing information about the terminate pass that is available."""
     return {"name": "terminate"}
 
-def composite_mapping_pass(layout_pass, routing_pass):
-    """Return a function(device) -> list of Passes, applying both layout and routing passes."""
-    def passlist_fn(device):
-        # No seed passed; each pass will randomize internally if stochastic
-        return layout_pass(device) + routing_pass(device)
-    return passlist_fn
+def remove_cregs(qc: QuantumCircuit) -> QuantumCircuit:
+        new_qc = QuantumCircuit(qc.num_qubits, name=qc.name)
+    
+        for instr, qargs, cargs in qc.data:
+            # If there are no classical arguments, keep the instruction
+            if not cargs:
+                new_qc.append(instr, qargs)
+            # (Optionally: if you want to keep barriers or certain instrs that don't use cregs, adjust logic here)
 
-def best_of_n_passmanager(passlist_fn, device, qc, n_attempts=10, metric_fn=None):
+        return new_qc
+class SafeAIRouting(AIRouting):
+    def run(self, dag):
+        qc = dag_to_circuit(dag)
+        # remove cregs from qc here before running the base pass!
+        qc = remove_cregs(qc)
+        dag = circuit_to_dag(qc)
+        return super().run(dag)
+
+def best_of_n_passmanager(
+    action, device, qc, max_iteration=20,
+    metric_fn=None, 
+):
+    """
+    Runs the given transpile_pass multiple times and keeps the best result.
+    action: the action dict with a 'transpile_pass' key (lambda/device->[passes])
+    device: the backend or device
+    qc: input circuit
+    max_iteration: number of times to try
+    metric_fn: function(circ) -> float for scoring
+    require_layout: skip outputs with missing layouts
+    """
     best_val = None
     best_result = None
     best_property_set = None
-    for _ in range(n_attempts):
-        pm = PassManager(passlist_fn(device))
-        out_circ = pm.run(qc)
-        prop_set = dict(pm.property_set)
-        val = metric_fn(out_circ) if metric_fn else out_circ.depth()
-        if best_val is None or val < best_val:
-            best_val = val
-            best_result = out_circ
-            best_property_set = prop_set
-    return best_result, best_property_set
+
+    for i in range(max_iteration):
+        # Build a fresh PassManager for every trial
+        passes = action["transpile_pass"](device)
+        pm = PassManager(passes)
+        try:
+            out_circ = pm.run(qc)
+            prop_set = dict(pm.property_set)
+            if prop_set.get("layout") is None and prop_set.get("final_layout") is None:
+                continue
+            val = metric_fn(out_circ) if metric_fn else out_circ.depth()
+            if best_val is None or val < best_val:
+                best_val = val
+                print(f"New lowest SWAP count: {best_val}")
+                best_result = out_circ
+                best_property_set = prop_set
+        except Exception as e:
+            print(f"[best_of_n_passmanager] Attempt {i+1} failed with error: {e}")
+            continue
+
+    if best_result is not None:
+        return best_result, best_property_set
+    else:
+        print("All mapping attempts failed; returning original circuit.")
+        return qc, {}
 
 
 def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> tuple[QuantumCircuit, str]:
@@ -529,8 +511,8 @@ def get_state_sample(max_qubits: int | None = None, rng: int | None = None) -> t
         file_list = list(get_path_training_circuits().glob("*.qasm"))
         assert len(file_list) > 0 """
 
-    #base_path = get_path_training_circuits() / "new_indep_circuits" /"train"
-    base_path = get_path_training_circuits() / "training_data_compilation"
+    base_path = get_path_training_circuits() / "new_indep_circuits" / "train"
+    #base_path = get_path_training_circuits() / "training_data_compilation"
     file_list = list(base_path.rglob("*.qasm"))
 
     """ found_suitable_qc = False
@@ -639,6 +621,14 @@ def create_feature_dict(qc: QuantumCircuit, basis_gates: list[str], coupling_map
     feature_dict["num_qubits"] = float(qc.num_qubits)
     feature_dict["depth"] = float(qc.depth())
     #feature_dict["gate_count"] = float(qc.size())
+    TWO_QUBIT_GATES = {"cx", "cz", "swap", "rzz", "rxx", "cy", "ch", 
+                   "crx", "cry", "crz", "cu1", "cp", "csx", "cu"}
+
+    def count_two_qubit_gates(qc: QuantumCircuit) -> int:
+        ops = qc.count_ops()
+        return sum(ops.get(gate, 0) for gate in TWO_QUBIT_GATES)
+    
+    feature_dict["num_2q_gates"] = float(count_two_qubit_gates(qc))
 
     
     supermarq_features = calc_supermarq_features(qc)

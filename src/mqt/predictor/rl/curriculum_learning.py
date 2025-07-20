@@ -29,11 +29,20 @@ def create_curriculum_with_equal_weights():
     for key in weights:
         weights[key] /= total_weight
 
-    file_path = Path(__file__).resolve().parent / "train.csv"
+    file_path = Path(__file__).resolve().parent / "metrics_new_indep.csv"
     if not file_path.exists():
         raise FileNotFoundError(f"Could not find metrics file at {file_path}")
 
     df = pd.read_csv(file_path)
+
+    for col in ["num_qubits", "depth", "gate_count"]:
+        min_val = df[col].min()
+        max_val = df[col].max()
+        if max_val - min_val > 0:
+            df[f"{col}_norm"] = (df[col] - min_val) / (max_val - min_val)
+        else:
+            df[f"{col}_norm"] = 0.0
+            
     df["complexity_score"] = sum(df[k] * w for k, w in weights.items())
     df["complexity_bin"] = pd.qcut(
         df["complexity_score"], q=5, labels=["very_easy", "easy", "medium", "hard", "very_hard"]
@@ -60,13 +69,13 @@ def run_training_on_equal_curriculum(curriculum_path: Path):
         timesteps=100000,
         trained=0,
         verbose=2,
-        save_name = "curr_combined",
+        save_name = "curr_new_new",
         curriculum=True,
-        #resume_from_level=4,
-        #resume_model_path="./checkpoints/curriculum_progression/model_level_4.zip"
+        #resume_from_level=1,
+        #resume_model_path="./checkpoints/curr_new_new/model_best_level_1.zip"
     )
 
 if __name__ == "__main__":
     curriculum_path = create_curriculum_with_equal_weights()
-    curriculum_path = Path("curriculum_metrics_gate_count.csv")
+    curriculum_path = Path("curriculum_metrics_combined.csv")
     run_training_on_equal_curriculum(curriculum_path)
