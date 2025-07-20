@@ -769,25 +769,27 @@ class PredictorEnv(Env):  # type: ignore[misc]
         check_mapping(self.state)
         mapped = check_mapping.property_set["is_swap_mapped"]
 
-        if not only_nat_gates:
-            actions = self.actions_synthesis_indices + self.actions_opt_indices
+        actions = []
+        if not mapped:
+            actions += self.actions_mapping_indices
+            if self.layout is not None:
+                actions += self.actions_routing_indices
+            else:
+                actions += self.actions_layout_indices
             
-            if not mapped:
-                actions += self.actions_mapping_indices
-                if self.layout is not None:
-                    actions += self.actions_routing_indices
-            return actions
+            if not only_nat_gates:
+                actions += self.actions_synthesis_indices + self.actions_opt_indices
+            else:
+                actions += self.actions_opt_indices
+        else:
+            if self.layout == None:
+                actions.append(self.actions_layout_indices[0])
+            if not only_nat_gates:
+                actions = self.actions_synthesis_indices + self.actions_opt_indices
+            else:
+                actions = self.actions_opt_indices + self.actions_final_optimization_indices
 
-        if mapped and self.layout is not None:  # The circuit is correctly mapped.
-            if self.num_steps > 50:
-                return [self.action_terminate_index]
-            return [self.action_terminate_index, *self.actions_opt_indices, *self.actions_final_optimization_indices]
-
-        if self.layout is not None:  # The circuit is not yet mapped but a layout is set.
-            return self.actions_routing_indices + self.actions_mapping_indices
-
-        # No layout applied yet
-        return self.actions_mapping_indices + self.actions_layout_indices + self.actions_opt_indices
+        return actions
     
     def export_action_effectiveness(self, path="action_effectiveness.json"):
         """Export the success/failure count of actions to a JSON file."""
