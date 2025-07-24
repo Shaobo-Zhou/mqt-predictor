@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
 import copy
 import sys
 import gc
 import time
 import json
 import warnings
+import psutil
+import ctypes
+
 from typing import TYPE_CHECKING, Any
 
 if sys.version_info >= (3, 11) and TYPE_CHECKING:  # pragma: no cover
@@ -28,7 +32,7 @@ from gymnasium.spaces import Box, Dict, Discrete
 from joblib import load
 from pytket.circuit import Qubit
 from pytket.extensions.qiskit import qiskit_to_tk, tk_to_qiskit
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, transpile
 from qiskit.passmanager.flow_controllers import DoWhileController
 from qiskit.transpiler import CouplingMap, PassManager, TranspileLayout
 from qiskit.transpiler.passes import CheckMap, GatesInBasis
@@ -83,14 +87,14 @@ class PredictorEnv(Env):  # type: ignore[misc]
             self.action_set[index] = elem
             self.actions_synthesis_indices.append(index)
             index += 1
-        for elem in rl.helper.get_actions_layout():
-            self.action_set[index] = elem
-            self.actions_layout_indices.append(index)
-            index += 1
-        for elem in rl.helper.get_actions_routing():
-            self.action_set[index] = elem
-            self.actions_routing_indices.append(index)
-            index += 1
+        # for elem in rl.helper.get_actions_layout():
+        #     self.action_set[index] = elem
+        #     self.actions_layout_indices.append(index)
+        #     index += 1
+        # for elem in rl.helper.get_actions_routing():
+        #     self.action_set[index] = elem
+        #     self.actions_routing_indices.append(index)
+        #     index += 1
         for elem in rl.helper.get_actions_opt():
             self.action_set[index] = elem
             self.actions_opt_indices.append(index)
@@ -139,7 +143,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
         }
         for gate in rl.helper.get_openqasm_gates():
             if gate in ['rz', 'sx', 'x', 'cx', 'y', 'z', 'h', 'swap','s', 'sdg', 'u']:
-                spaces[gate] = Discrete(120000)
+                spaces[gate] = Discrete(130000)
             else:
                 spaces[gate] = Discrete(6000)
         spaces["num_2q_gates"] = Discrete(100000)
@@ -172,19 +176,36 @@ class PredictorEnv(Env):  # type: ignore[misc]
         prev_fidelity = None
 
         # Calculate fidelity if the circuit is in a terminable state (valid)
-        if self.action_terminate_index in self.determine_valid_actions_for_state():
-            try:
-                prev_fidelity = self.calculate_reward()
-            except Exception:
-                prev_fidelity = None
+        try:
+            prev_fidelity = self.calculate_reward()
+        except Exception:
+            prev_fidelity = None
 
-        start_time = time.time()
+        mem = psutil.virtual_memory()
+        threshold = 0.90
+        if mem.percent / 100.0 > threshold:
+            logger.warning(
+                f"🚨 Memory usage high: {mem.percent:.1f}%. "
+                "Ending episode early to avoid OOM."
+            )
+            gc.collect()
+            return (
+                rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map),
+                0,
+                True,
+                False,
+                {'reason': 'high_memory_usage'},
+            )
+        #start_time = time.time()
         altered_qc = self.apply_action(action)
-        elapsed = time.time() - start_time
+        #elapsed = time.time() - start_time
 
-        logger.info(f"⏱️  [Step {self.num_steps}] Action '{action_name}' took {elapsed:.2f} seconds")
+        
+        self.num_steps += 1
 
-        if not altered_qc:
+        #logger.info(f"⏱️  [Step {self.num_steps}] Action '{action_name}' took {elapsed:.2f} seconds")
+
+        if not altered_qc or self.num_steps > 70:
             gc.collect()
             return (
                 rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map),
@@ -195,7 +216,21 @@ class PredictorEnv(Env):  # type: ignore[misc]
             )
 
         self.state: QuantumCircuit = altered_qc
-        self.num_steps += 1
+        # in case the Qiskit.QuantumCircuit has unitary or u gates in it, decompose them (because otherwise qiskit will throw an error when applying the BasisTranslator
+        if self.state.count_ops().get("unitary"):
+            temp_circ = self.state.decompose(gates_to_decompose="unitary")
+            self.state = transpile(temp_circ, basis_gates=rl.helper.get_openqasm_gates(), optimization_level=0)
+            del temp_circ
+            gc.collect()
+        elif self.state.count_ops().get("clifford"):
+            temp_circ = self.state.decompose(gates_to_decompose="clifford")
+            self.state = transpile(temp_circ, basis_gates=rl.helper.get_openqasm_gates(), optimization_level=0)
+            del temp_circ
+            gc.collect()
+
+        obs = rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map)
+        for key in ["mapped", "only_nat_gates"]:
+            print(f"{key}: {obs[key]}")
 
         self.valid_actions = self.determine_valid_actions_for_state()
         if len(self.valid_actions) == 0:
@@ -204,8 +239,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
         done = False
         reward_val = self.reward_neg  # negative step penalty
         #reward_val = 0
-        new_obs = rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map)
-
+        
         if action == self.action_terminate_index:
             # Final fidelity reward
             reward_val = self.calculate_reward()
@@ -230,24 +264,24 @@ class PredictorEnv(Env):  # type: ignore[misc]
                 except Exception:
                     pass
 
-            if self.features_changed(prev_obs, new_obs):
+            if self.features_changed(prev_obs, obs):
                 self.action_effectiveness[action_name]["changed"] += 1
             else:
                 self.action_effectiveness[action_name]["unchanged"] += 1
                 logger.info("Ineffective action")
 
-        # in case the Qiskit.QuantumCircuit has unitary or u gates in it, decompose them (because otherwise qiskit will throw an error when applying the BasisTranslator
-        if self.state.count_ops().get("unitary"):
-            self.state = self.state.decompose(gates_to_decompose="unitary")
-        elif self.state.count_ops().get("clifford"):
-            self.state = self.state.decompose(gates_to_decompose="clifford")
 
         self.state._layout = self.layout  # noqa: SLF001
-        obs = rl.helper.create_feature_dict(self.state, self.device.basis_gates, self.device.coupling_map)
-        for key in ["mapped", "only_nat_gates"]:
-            print(f"{key}: {obs[key]}")
+        # if self.layout is not None: 
+        #     print("Existing Layout")
         del altered_qc
+        if action == self.action_terminate_index:
+            del self.state
+            self.state = None
+        #rl.helper.log_memory_usage("Before GC and maybe_trim_memory")
         gc.collect()
+        rl.helper.maybe_trim_memory()
+        #rl.helper.log_memory_usage("After GC and maybe_trim_memory")
         return obs, reward_val, done, False, {}
 
     def export_action_timings(self, filepath: str = "action_timings.json"):
@@ -355,6 +389,11 @@ class PredictorEnv(Env):  # type: ignore[misc]
         Returns:
             The initial state and additional information.
         """
+        if hasattr(self, "state") and self.state is not None:
+            del self.state
+            self.state = None
+            gc.collect()
+        #rl.helper.log_full_memory()
         super().reset(seed=seed)
         if self.curriculum_sampling_enabled and self.curriculum_df is not None:
             # level_label = self.curriculum_bins[self.current_difficulty_level]
@@ -594,15 +633,18 @@ class PredictorEnv(Env):  # type: ignore[misc]
                 # 3. Stochastic actions: best-of-n search
                 if action.get("stochastic", False):
                     metric_fn = lambda circ: circ.count_ops().get("swap", 0)
-                    max_iteration = 30
-                    if action["name"] in {"SabreLayout", "SabreMapping"}:
+                    #max_iteration = (200,200)
+                    max_iteration = (os.cpu_count(), os.cpu_count())
+                    if "Sabre" in action["name"] and "AIRouting" not in action["name"]:
                         # Use single PassManager with many internal trials
                         transpile_pass = action["transpile_pass"](self.device, max_iteration)
                         pm = PassManager(transpile_pass)
                         altered_qc = pm.run(self.state)
                         pm_property_set = dict(pm.property_set)
-                    elif action["name"] == "AIRouting":
+                    elif "AIRouting" in action["name"]:
                         # Run AIRouting best-of-n
+                        #max_iteration = (200, 25)
+                        max_iteration = (os.cpu_count(), 1)
                         altered_qc, pm_property_set = rl.helper.best_of_n_passmanager(
                             action, 
                             self.device,
@@ -678,6 +720,7 @@ class PredictorEnv(Env):  # type: ignore[misc]
                         _output_qubit_list=altered_qc.qubits,
                         _input_qubit_count=self.num_qubits_uncompiled_circuit,
                     )
+                    
 
             elif action_index in self.actions_routing_indices:
                 # If routing, update just the final_layout
@@ -700,9 +743,12 @@ class PredictorEnv(Env):  # type: ignore[misc]
                 qubit_map = {qbs[i]: Qubit("q", i) for i in range(len(qbs))}
                 tket_qc.rename_units(qubit_map)
                 altered_qc = tk_to_qiskit(tket_qc, replace_implicit_swaps=True)
+                del tket_qc
                 if action_index in self.actions_routing_indices:
                     assert self.layout is not None
                     self.layout.final_layout = rl.helper.final_layout_pytket_to_qiskit(tket_qc, altered_qc)
+                # Decompose to the allowed gates (by default generic u gates are used)
+                altered_qc = transpile(altered_qc, basis_gates=rl.helper.get_openqasm_gates(), optimization_level=0)
             except Exception:
                 logger.exception(
                     f"Error in executing TKET transpile pass for {action['name']} at step {self.num_steps} for {self.filename}"
@@ -719,6 +765,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
                 elif action_index in self.actions_mapping_indices:
                     bqskit_compiled_qc, initial_layout, final_layout = transpile_pass(bqskit_qc)
                     altered_qc = bqskit_to_qiskit(bqskit_compiled_qc)
+                    del bqskit_compiled_qc
+                    del bqskit_qc
                     layout = rl.helper.final_layout_bqskit_to_qiskit(
                         initial_layout, final_layout, altered_qc, self.state
                     )
@@ -736,28 +784,8 @@ class PredictorEnv(Env):  # type: ignore[misc]
             error_msg = f"Origin {action['origin']} not supported."
             raise ValueError(error_msg)
 
+        gc.collect()
         return altered_qc
-
-    """ def determine_valid_actions_for_state(self) -> list[int]:
-        # Determines and returns the valid mapping (layout+routing) actions for the current state.
-        check_nat_gates = GatesInBasis(basis_gates=self.device.basis_gates)
-        check_nat_gates(self.state)
-        only_nat_gates = check_nat_gates.property_set["all_gates_in_basis"]
-
-        if not only_nat_gates:
-            return self.actions_synthesis_indices + self.actions_opt_indices
-            
-        check_mapping = CheckMap(coupling_map=CouplingMap(self.device.coupling_map))
-        check_mapping(self.state)
-        mapped = check_mapping.property_set["is_swap_mapped"]
-
-        if mapped:
-            if self.num_steps > 50:
-                return [self.action_terminate_index]
-            return [self.action_terminate_index, *self.actions_opt_indices]
-
-        # If not mapped, expose only mapping actions
-        return self.actions_mapping_indices + self.actions_opt_indices """
 
     def determine_valid_actions_for_state(self) -> list[int]:
         #Determines and returns the valid actions for the current state.
@@ -769,27 +797,56 @@ class PredictorEnv(Env):  # type: ignore[misc]
         check_mapping(self.state)
         mapped = check_mapping.property_set["is_swap_mapped"]
 
-        actions = []
-        if not mapped:
-            actions += self.actions_mapping_indices
-            if self.layout is not None:
-                actions += self.actions_routing_indices
-            else:
-                actions += self.actions_layout_indices
+        if not only_nat_gates:
+            actions = self.actions_synthesis_indices + self.actions_opt_indices
             
-            if not only_nat_gates:
-                actions += self.actions_synthesis_indices + self.actions_opt_indices
-            else:
-                actions += self.actions_opt_indices
-        else:
-            if self.layout == None:
-                actions.append(self.actions_layout_indices[0])
-            if not only_nat_gates:
-                actions = self.actions_synthesis_indices + self.actions_opt_indices
-            else:
-                actions = self.actions_opt_indices + self.actions_final_optimization_indices
+            # if not mapped:
+            #     actions += self.actions_mapping_indices
+            return actions
 
-        return actions
+        if mapped and self.layout is not None:  # The circuit is correctly mapped.
+            if self.num_steps > 50:
+                return [self.action_terminate_index]
+            return [self.action_terminate_index, *self.actions_opt_indices, *self.actions_final_optimization_indices]
+        else:
+            return self.actions_mapping_indices + self.actions_opt_indices 
+ 
+    """ def determine_valid_actions_for_state(self) -> list[int]:
+        
+        check_nat_gates = GatesInBasis(basis_gates=self.device.basis_gates)
+        check_nat_gates(self.state)
+        only_nat_gates = check_nat_gates.property_set["all_gates_in_basis"]
+
+        check_mapping = CheckMap(coupling_map=CouplingMap(self.device.coupling_map))
+        check_mapping(self.state)
+        mapped = check_mapping.property_set["is_swap_mapped"]
+
+
+        if not only_nat_gates:
+            actions = self.actions_synthesis_indices + self.actions_opt_indices
+            if not mapped:
+                if not self.was_mapped:
+                    if self.layout is None:
+                        actions += self.actions_layout_indices + self.actions_mapping_indices
+                    else:
+                        return self.actions_routing_indices
+                else: 
+                    self.layout = None
+                    self.was_mapped = False
+                    actions += self.actions_layout_indices + self.actions_mapping_indices
+
+            return actions
+
+        if mapped and self.layout is not None:  # The circuit is correctly mapped.
+            if self.num_steps > 50:
+                return [self.action_terminate_index]
+            return [self.action_terminate_index, *self.actions_opt_indices, *self.actions_final_optimization_indices]
+
+        if self.layout is not None:  # The circuit is not yet mapped but a layout is set.
+            return self.actions_routing_indices
+
+        # No layout applied yet
+        return self.actions_mapping_indices + self.actions_layout_indices + self.actions_opt_indices """
     
     def export_action_effectiveness(self, path="action_effectiveness.json"):
         """Export the success/failure count of actions to a JSON file."""
