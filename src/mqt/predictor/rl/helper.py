@@ -290,7 +290,7 @@ def get_actions_mapping() -> list[dict[str, Any]]:
         {
             "name": "SabreMapping",
             "transpile_pass": lambda device: [
-                SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=False),
+                SabreLayout(coupling_map=CouplingMap(device.coupling_map), skip_routing=False, max_iterations=1, seed=None),
             ],
             "origin": "qiskit",
         },

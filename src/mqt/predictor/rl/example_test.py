@@ -29,11 +29,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
 
-    test_dir = rl.helper.get_path_training_circuits() / "new_indep_circuits" / "special_test"
+    test_dir = rl.helper.get_path_training_circuits() / "new_indep_circuits" / "test"
     model_dir = rl.helper.get_path_trained_model()
     model_paths = {
         #"baseline": model_dir / "nobqskit" / "rl_expected_fidelity_ibm_washington",
-        "baseline_new_data": model_dir / "rl_old_new_data" / "rl_expected_fidelity_ibm_washington",
+        "baseline_new_data": model_dir / "rl_old_old" / "rl_expected_fidelity_ibm_washington",
         #"baseline_0.02": model_dir / "rl_new_reward_0.02" / "rl_expected_fidelity_ibm_washington",
         #"baseline_mqt": model_dir / "mqt_30_new" / "rl_expected_fidelity_ibm_washington",
         #"model_final": model_dir / "curr" / "model_final",
@@ -44,12 +44,12 @@ if __name__ == "__main__":
         #"level_4": model_dir / "curr" / "model_level_4",
         
     }
-    results_dir = Path(__file__).resolve().parent / "results" / "old_new_data"
+    results_dir = Path(__file__).resolve().parent / "results" / "old_old_20"
     results_dir.mkdir(parents=True, exist_ok=True)
-    output_path = results_dir / "special_test.csv"
-    #output_path = results_dir / "general_test.csv"
+    #output_path = results_dir / "special_test.csv"
+    output_path = results_dir / "general_test.csv"
     #N = 10  # Number of evaluation runs
-    N=1
+    N=20
     model_results = []
 
     # Evaluate and save after each model
